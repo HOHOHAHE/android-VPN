@@ -365,49 +365,81 @@ class Socks5Proxy(
     }
     
     private fun getUnderlyingNetwork(connectivityManager: ConnectivityManager): Network? {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val networks = connectivityManager.allNetworks
-                
-                for (network in networks) {
-                    try {
-                        val networkInfo = connectivityManager.getNetworkInfo(network)
-                        val networkCapabilities = connectivityManager.getNetworkCapabilities(network)
-                        
-                        if (networkInfo != null && networkInfo.isConnected && 
-                            networkInfo.type != ConnectivityManager.TYPE_VPN) {
-                            
-                            if (networkCapabilities != null && 
-                                !networkCapabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) {
-                                Log.d(TAG, "Found underlying network for SOCKS5: ${networkInfo.typeName}")
-                                return network
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error checking network $network", e)
-                    }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            Log.d(TAG, "Underlying network selection requires API level 23+")
+            return null
+        }
+
+        var bestNetwork: Network? = null
+        var bestNetworkValidated = false
+
+        try {
+            val networks = connectivityManager.allNetworks
+            if (networks.isEmpty()) {
+                Log.w(TAG, "No networks available.")
+                return null
+            }
+
+            Log.d(TAG, "Available networks: ${networks.size}")
+            networks.forEachIndexed { index, network ->
+                val capabilities: android.net.NetworkCapabilities? = try {
+                    connectivityManager.getNetworkCapabilities(network)
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "Failed to get capabilities for network $network due to SecurityException: ${e.message}")
+                    null
                 }
-                
-                // Fallback approach
-                for (network in networks) {
-                    try {
-                        val networkCapabilities = connectivityManager.getNetworkCapabilities(network)
-                        if (networkCapabilities != null && 
-                            networkCapabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                            !networkCapabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) {
-                            return network
+
+                if (capabilities != null) {
+                    val hasInternet = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    val isNotVpn = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                    val isValidated = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    val transportTypes = getTransportTypes(capabilities)
+
+                    Log.d(TAG, "Network #$index ($network): Internet=$hasInternet, NotVPN=$isNotVpn, Validated=$isValidated, Transports=$transportTypes")
+
+                    if (hasInternet && isNotVpn) {
+                        if (isValidated) {
+                            if (!bestNetworkValidated) { // Prefer validated if current best is not
+                                Log.i(TAG, "Selecting validated network: $network ($transportTypes)")
+                                bestNetwork = network
+                                bestNetworkValidated = true
+                            } else {
+                                Log.d(TAG, "Found another validated network: $network ($transportTypes), keeping current best: $bestNetwork")
+                            }
+                        } else if (bestNetwork == null) { // No validated network found yet, take this one for now
+                            Log.i(TAG, "Selecting non-validated network (no validated found yet): $network ($transportTypes)")
+                            bestNetwork = network
+                        } else {
+                            Log.d(TAG, "Found non-validated network: $network ($transportTypes), but already have a candidate: $bestNetwork (Validated: $bestNetworkValidated)")
                         }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error checking network capabilities for $network", e)
                     }
+                } else {
+                    Log.d(TAG, "Network #$index ($network): Capabilities are null.")
                 }
             }
-            
-            null
+
+            if (bestNetwork != null) {
+                Log.i(TAG, "Final selected underlying network: $bestNetwork (Validated: $bestNetworkValidated)")
+            } else {
+                Log.w(TAG, "No suitable underlying network found (must have INTERNET and NOT_VPN).")
+            }
+            return bestNetwork
         } catch (e: Exception) {
             Log.e(TAG, "Error finding underlying network for SOCKS5", e)
-            null
+            return null
         }
+    }
+
+    private fun getTransportTypes(capabilities: android.net.NetworkCapabilities): String {
+        val types = mutableListOf<String>()
+        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) types.add("CELLULAR")
+        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) types.add("WIFI")
+        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_BLUETOOTH)) types.add("BLUETOOTH")
+        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) types.add("ETHERNET")
+        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) types.add("VPN")
+        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI_AWARE)) types.add("WIFI_AWARE")
+        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_LOWPAN)) types.add("LOWPAN")
+        return types.joinToString(", ")
     }
 }
 

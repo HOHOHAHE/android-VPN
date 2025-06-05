@@ -519,7 +519,40 @@ class TcpHandler(
             // Add data
             packet.put(data)
             
-            packet.flip()
+            // Calculate IP checksum
+            packet.putShort(10, 0) // Zero out checksum field
+            val ipChecksum = calculateChecksum(packet, 0, 20)
+            packet.putShort(10, ipChecksum)
+
+            // Calculate TCP checksum
+            // Create pseudo-header
+            val pseudoHeader = ByteBuffer.allocate(12 + 20 + data.size) // Pseudo-header + TCP header + data
+            pseudoHeader.put(sourceAddress.address)
+            pseudoHeader.put(destAddress.address)
+            pseudoHeader.put(0.toByte()) // Reserved
+            pseudoHeader.put(6.toByte()) // Protocol (TCP)
+            pseudoHeader.putShort((20 + data.size).toShort()) // TCP length (header + data)
+
+            // Copy TCP header and data to pseudo-header buffer
+            // The TCP header starts at offset 20 in the original packet.
+            // The TCP data follows immediately after the TCP header.
+            // The length of (TCP header + data) is (20 + data.size).
+            pseudoHeader.put(packet.array(), packet.arrayOffset() + 20, 20 + data.size)
+
+            // Reset TCP checksum field in pseudo-header buffer for calculation
+            // The TCP checksum is at offset 16 within the TCP header part of the pseudoHeader.
+            // The TCP header part starts at offset 12 in pseudoHeader (after pseudo-header fields).
+            pseudoHeader.putShort(12 + 16, 0)
+
+            pseudoHeader.flip() // Prepare for reading by calculateChecksum
+
+            val tcpChecksum = calculateChecksum(pseudoHeader, 0, pseudoHeader.limit())
+            // Restore packet's original position before modifying it, as calculateChecksum for IP might have changed it.
+            // However, IP checksum is calculated first, and packet position is restored there.
+            // Here, we are modifying the main 'packet' at TCP checksum offset.
+            packet.putShort(20 + 16, tcpChecksum) // Set TCP checksum in original packet (offset 20 for IP, 16 for TCP checksum)
+
+            packet.rewind() // Rewind to the beginning before returning
             packet
             
         } catch (e: Exception) {
@@ -528,6 +561,28 @@ class TcpHandler(
         }
     }
     
+    private fun calculateChecksum(buffer: ByteBuffer, offset: Int, length: Int): Short {
+        var sum = 0
+        val originalPosition = buffer.position()
+        buffer.position(offset)
+
+        for (i in 0 until length / 2) {
+            sum += buffer.short.toInt() and 0xFFFF
+        }
+
+        // If length is odd, add the last byte (padded with 0)
+        if (length % 2 != 0) {
+            sum += (buffer.get().toInt() and 0xFF) shl 8
+        }
+
+        while (sum shr 16 > 0) {
+            sum = (sum and 0xFFFF) + (sum shr 16)
+        }
+
+        buffer.position(originalPosition) // Restore buffer position
+        return sum.toShort().inv()
+    }
+
     private fun getTCPFlagsString(flags: Int): String {
         val flagList = mutableListOf<String>()
         if ((flags and 0x01) != 0) flagList.add("FIN")
