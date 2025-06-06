@@ -69,6 +69,17 @@ class MainActivity : AppCompatActivity() {
 
         setupUI()
         bindVpnService()
+    // 測試 JNI 連結
+    try {
+        val jniMsg = NativeBridge.stringFromJNI()
+        Log.d(TAG, "JNI test: $jniMsg")
+        // 若 statusText 已初始化則顯示
+        if (::statusText.isInitialized) {
+            statusText.text = "${statusText.text}\nJNI: $jniMsg"
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "JNI test failed", e)
+    }
     }
 
     private fun setupUI() {

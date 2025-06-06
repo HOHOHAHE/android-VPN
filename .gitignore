@@ -1,0 +1,141 @@
+# Android 編譯產物
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+
+# 建置目錄
+build/
+*/build/
+.gradle/
+gradle-app.setting
+
+# 本地配置檔案 (包含 SDK 路徑等敏感資訊)
+local.properties
+
+# Android Studio / IntelliJ IDEA
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries/
+.idea/libraries/
+.idea/caches/
+.idea/modules.xml
+.idea/navEditor.xml
+.idea/deploymentTargetDropDown.xml
+.idea/misc.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/inspectionProfiles/
+.idea/shelf/
+.idea/vcs.xml
+*.iml
+
+# Keystore 檔案 (包含敏感憑證)
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+
+# NDK 編譯產物
+.externalNativeBuild/
+.cxx/
+obj/
+libs/
+jni/libs/
+jni/obj/
+
+# VPN 相關原生庫
+*.so
+*.a
+*.dylib
+
+# hev-socks5-tunnel 相關
+hev-socks5-tunnel/
+src/main/jniLibs/
+src/main/assets/hev-*
+
+# 日誌檔案
+*.log
+logs/
+
+# 測試報告
+test-results/
+coverage/
+jacoco/
+
+# Proguard
+proguard/
+mapping.txt
+seeds.txt
+usage.txt
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
+fastlane/readme.md
+
+# 系統產生檔案
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 編輯器檔案
+.vscode/
+*.sublime-*
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# 臨時檔案
+*.tmp
+*.temp
+*.bak
+
+# Kotlin 編譯快取
+.kotlin/
+
+# Firebase / Google Services (如果包含敏感配置)
+# google-services.json
+# firebase-adminsdk-*.json
+
+# 密鑰與配置檔案
+secrets/
+config/secrets.properties
+src/main/assets/config.json
+
+# APK 分析檔案
+app-*.apk
+app-*-unsigned.apk
+
+# Android Profiler
+captures/
+
+# Freeline
+freeline.py
+freeline/
+freeline_project_description.json
+
+# Version control
+.svn/
+.git/
+
+# 其他不需要版控的檔案
+*.ipr
+*.iws
+out/
+gen/
+bin/
+tmp/
+.gradle-cache/
+.settings/

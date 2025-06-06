@@ -580,7 +580,8 @@ class TcpHandler(
         }
 
         buffer.position(originalPosition) // Restore buffer position
-        return sum.toShort().inv()
+        // 兼容舊版 Kotlin，避免 inv() 無法解析
+        return (sum.toShort().toInt() xor 0xFFFF).toShort()
     }
 
     private fun getTCPFlagsString(flags: Int): String {
