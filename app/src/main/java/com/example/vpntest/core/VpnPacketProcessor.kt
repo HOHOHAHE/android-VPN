@@ -3,6 +3,7 @@ package com.example.vpntest.core
 import android.content.Context
 import android.util.Log
 import com.example.vpntest.network.VpnNetworkManager
+import com.example.vpntest.migration.MigrationFlags
 import kotlinx.coroutines.*
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -11,7 +12,17 @@ import java.nio.channels.FileChannel
 
 /**
  * Main packet processor that coordinates packet processing through protocol handlers
+ *
+ * @Deprecated("遷移至 HEV Tunnel 架構")
+ * 這是舊版本的封包處理器，在遷移到 HEV Socks5 Tunnel 後將被逐步淘汰。
+ * 目前保留作為向後相容和備用方案使用。
+ *
+ * 相關遷移：
+ * - 新架構: HevTunnelManager 和相關組件
+ * - 控制標誌: MigrationFlags.shouldUseLegacyProcessor()
+ * - 預計移除版本: v2.0.0
  */
+@Deprecated("Use HEV Tunnel architecture instead", ReplaceWith("HevTunnelManager"))
 class VpnPacketProcessor(
     private val context: Context,
     private val networkManager: VpnNetworkManager,
@@ -41,6 +52,15 @@ class VpnPacketProcessor(
             Log.w(TAG, "Packet processor already running")
             return
         }
+        
+        // 檢查遷移標誌，決定是否使用舊處理器
+        if (!MigrationFlags.shouldUseLegacyProcessor()) {
+            Log.i(TAG, "Legacy packet processor disabled by migration flags")
+            Log.i(TAG, "Current migration info: ${MigrationFlags.getMigrationInfo()}")
+            return
+        }
+        
+        Log.w(TAG, "使用舊版封包處理器 - 此組件已被標記為廢棄，建議遷移至 HEV Tunnel")
         
         try {
             val vpnInterface = networkManager.getVpnInterface()

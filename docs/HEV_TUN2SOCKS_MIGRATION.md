@@ -12,9 +12,9 @@
 
 ### 步驟
 1. **分析現有資料流**  
-   - 釐清 VPN Service 目前如何將 TUN 封包導向 TCP/UDP 處理與 SOCKS5 Proxy。
-2. **移除 Tun2Socks/TcpHandler/Socks5Proxy**  
-   - 移除自有的 TUN 封包解析、TCP/UDP 處理與 SOCKS5 Proxy 相關程式碼。
+   - 釐清 VPN Service 目前如何將 TUN 封包導向 TCP/UDP 處理與 本地端 SOCKS5 Proxy。
+2. **移除 Tun2Socks/TcpHandler**  
+   - 移除自有的 TUN 封包解析、TCP/UDP 處理相關程式碼。
 3. **整合 hev-socks5-tunnel**  
    - 以子程序方式啟動 `hev-socks5-tunnel`，將 TUN 介面直接交由其接管。
    - 於 Android 端以 JNI 或 Process 管理方式啟動與監控。

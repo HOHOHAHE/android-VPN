@@ -1,0 +1,24 @@
+# HEV Socks5 Tunnel Configuration Template
+# This file serves as a template for generating runtime configurations
+
+tunnel:
+  name: android-vpn
+  mtu: 1500
+  ipv4: true
+  ipv6: false
+
+socks5:
+  address: 127.0.0.1
+  port: 1080
+  username: ~
+  password: ~
+
+tcp:
+  connect-timeout: 5000
+  read-timeout: 60000
+  write-timeout: 60000
+
+misc:
+  task-stack-size: 20480
+  log-file: /data/data/com.example.vpntest/files/hev-tunnel.log
+  log-level: warn

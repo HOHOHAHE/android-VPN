@@ -12,10 +12,16 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.vpntest.core.*
+import com.example.vpntest.hev.ConfigManager
+import com.example.vpntest.hev.HevTunnelManager
+import com.example.vpntest.hev.TunnelMonitor
+import com.example.vpntest.migration.MigrationFlags
 import com.example.vpntest.network.VpnNetworkManager
 import com.example.vpntest.protocols.TcpHandler
 import com.example.vpntest.proxy.Socks5Proxy
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 
 /**
  * Zyxel VPN service using modular architecture
@@ -46,6 +52,11 @@ class ZyxelVpnService : VpnService() {
     
     // Proxy implementations
     private lateinit var socks5Proxy: Socks5Proxy
+    
+    // HEV tunnel components (第二階段新增)
+    private lateinit var hevTunnelManager: HevTunnelManager
+    private lateinit var configManager: ConfigManager
+    private lateinit var tunnelMonitor: TunnelMonitor
     
     @Volatile
     private var isRunning = false
@@ -87,37 +98,155 @@ class ZyxelVpnService : VpnService() {
                     return@launch
                 }
                 
-                // 1. Setup network interface
-                if (!networkManager.setupVpnInterface()) {
-                    Log.e(TAG, "Failed to setup VPN interface")
-                    return@launch
+                // 根據 MigrationFlags 選擇啟動方式
+                if (MigrationFlags.USE_HEV_TUNNEL) {
+                    startVpnWithHevTunnel()
+                } else {
+                    startVpnWithLegacyProcessor()
                 }
-                
-                // 2. Create packet processor now that VPN interface is ready
-                createPacketProcessor()
-                
-                // 3. Start SOCKS5 proxy
-                socks5Proxy.start()
-                
-                // 4. Register proxy with router
-                connectionRouter.setDefaultProxy(socks5Proxy)
-                
-                // 5. Register protocol handlers
-                packetProcessor.registerHandler(tcpHandler)
-                
-                // 6. Start packet processing
-                packetProcessor.start()
-                
-                isRunning = true
-                startForeground(NOTIFICATION_ID, createNotification("Zyxel VPN Connected"))
-                
-                Log.i(TAG, "Zyxel VPN service started successfully")
-                logSystemStatus()
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start Zyxel VPN", e)
                 stopVpn()
             }
+        }
+    }
+    
+    /**
+     * 使用 hev-socks5-tunnel 啟動 VPN (第二階段新實作)
+     */
+    private suspend fun startVpnWithHevTunnel() {
+        Log.i(TAG, "Starting VPN with hev-socks5-tunnel...")
+        
+        // 1. Setup network interface
+        if (!networkManager.setupVpnInterface()) {
+            Log.e(TAG, "Failed to setup VPN interface")
+            return
+        }
+        
+        // 2. Start SOCKS5 proxy
+        socks5Proxy.start()
+        connectionRouter.setDefaultProxy(socks5Proxy)
+        
+        // 3. Generate tunnel configuration
+        val configPath = configManager.generateConfig(1080)
+        val tunFd = getTunFileDescriptor()
+        
+        if (tunFd == -1) {
+            Log.e(TAG, "Invalid TUN file descriptor")
+            return
+        }
+        
+        // 4. Start hev-tunnel
+        if (!hevTunnelManager.startTunnel(tunFd, configPath)) {
+            Log.e(TAG, "Failed to start hev-tunnel")
+            return
+        }
+        
+        // 5. Setup monitoring with restart callback
+        tunnelMonitor.setRestartCallback { restartTunnel() }
+        tunnelMonitor.startMonitoring()
+        
+        // 6. Monitor tunnel status changes
+        tunnelMonitor.status
+            .onEach { status ->
+                Log.d(TAG, "Tunnel status changed: $status")
+                when (status) {
+                    com.example.vpntest.hev.TunnelStatus.FAILED -> {
+                        Log.e(TAG, "Tunnel failed, stopping VPN")
+                        stopVpn()
+                    }
+                    else -> {
+                        // 其他狀態處理
+                    }
+                }
+            }
+            .launchIn(serviceScope)
+        
+        isRunning = true
+        startForeground(NOTIFICATION_ID, createNotification("VPN Connected (HEV Tunnel)"))
+        Log.i(TAG, "VPN started successfully with hev-tunnel")
+        logSystemStatus()
+    }
+    
+    /**
+     * 使用舊的封包處理器啟動 VPN (保留作為備用方案)
+     */
+    private suspend fun startVpnWithLegacyProcessor() {
+        Log.i(TAG, "Starting VPN with legacy packet processor...")
+        
+        // 1. Setup network interface
+        if (!networkManager.setupVpnInterface()) {
+            Log.e(TAG, "Failed to setup VPN interface")
+            return
+        }
+        
+        // 2. Create packet processor now that VPN interface is ready
+        createPacketProcessor()
+        
+        // 3. Start SOCKS5 proxy
+        socks5Proxy.start()
+        
+        // 4. Register proxy with router
+        connectionRouter.setDefaultProxy(socks5Proxy)
+        
+        // 5. Register protocol handlers
+        packetProcessor.registerHandler(tcpHandler)
+        
+        // 6. Start packet processing
+        packetProcessor.start()
+        
+        isRunning = true
+        startForeground(NOTIFICATION_ID, createNotification("VPN Connected (Legacy)"))
+        Log.i(TAG, "VPN started successfully with legacy processor")
+        logSystemStatus()
+    }
+    
+    /**
+     * 重啟 tunnel (用於監控器的自動重啟)
+     */
+    private suspend fun restartTunnel(): Boolean {
+        return try {
+            Log.i(TAG, "Restarting tunnel...")
+            
+            // 停止現有的 tunnel
+            hevTunnelManager.stopTunnel()
+            delay(1000)
+            
+            // 重新獲取 TUN fd 和配置
+            val tunFd = getTunFileDescriptor()
+            val configPath = configManager.getConfigPath()
+            
+            if (tunFd == -1) {
+                Log.e(TAG, "Invalid TUN fd during restart")
+                return false
+            }
+            
+            // 重新啟動 tunnel
+            val success = hevTunnelManager.startTunnel(tunFd, configPath)
+            if (success) {
+                Log.i(TAG, "Tunnel restarted successfully")
+            } else {
+                Log.e(TAG, "Failed to restart tunnel")
+            }
+            
+            success
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception during tunnel restart", e)
+            false
+        }
+    }
+    
+    /**
+     * 獲取 TUN 介面的檔案描述符
+     */
+    private fun getTunFileDescriptor(): Int {
+        return try {
+            val vpnInterface = networkManager.getVpnInterface()
+            vpnInterface?.fd ?: -1
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get TUN file descriptor", e)
+            -1
         }
     }
     
@@ -128,19 +257,29 @@ class ZyxelVpnService : VpnService() {
         isRunning = false
         
         try {
-            // Stop packet processing
-            packetProcessor.stop()
+            if (MigrationFlags.USE_HEV_TUNNEL) {
+                // 停止 HEV tunnel 相關組件
+                tunnelMonitor.stopMonitoring()
+                hevTunnelManager.stopTunnel()
+            } else {
+                // 停止舊的封包處理器
+                if (::packetProcessor.isInitialized) {
+                    packetProcessor.stop()
+                }
+                
+                // 停止協議處理器
+                if (::tcpHandler.isInitialized) {
+                    tcpHandler.stop()
+                }
+                
+                // 清理會話
+                sessionManager.cleanup()
+            }
             
-            // Stop protocol handlers
-            tcpHandler.stop()
-            
-            // Stop proxy
+            // 停止代理伺服器
             socks5Proxy.stop()
             
-            // Cleanup sessions
-            sessionManager.cleanup()
-            
-            // Teardown network
+            // 清理網路介面
             networkManager.teardownVpnInterface()
             
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -160,15 +299,30 @@ class ZyxelVpnService : VpnService() {
         return buildString {
             appendLine("=== Zyxel VPN System Status ===")
             appendLine("VPN Running: $isRunning")
+            appendLine("Using HEV Tunnel: ${MigrationFlags.USE_HEV_TUNNEL}")
             appendLine()
+            
+            if (MigrationFlags.USE_HEV_TUNNEL) {
+                appendLine("=== HEV Tunnel Status ===")
+                if (::hevTunnelManager.isInitialized) {
+                    appendLine("Tunnel Running: ${hevTunnelManager.isRunning()}")
+                }
+                if (::tunnelMonitor.isInitialized) {
+                    appendLine("Tunnel Status: ${tunnelMonitor.status.value}")
+                }
+                appendLine()
+            } else {
+                appendLine("=== Legacy Processor Status ===")
+                if (::packetProcessor.isInitialized) {
+                    appendLine(packetProcessor.getStats())
+                }
+                appendLine()
+                
+                appendLine(sessionManager.getDetailedStats())
+                appendLine()
+            }
             
             appendLine(networkManager.getNetworkInfo())
-            appendLine()
-            
-            appendLine(sessionManager.getDetailedStats())
-            appendLine()
-            
-            appendLine(packetProcessor.getStats())
             appendLine()
             
             appendLine(connectionRouter.getRoutingInfo())
@@ -200,7 +354,14 @@ class ZyxelVpnService : VpnService() {
         // Initialize proxy
         socks5Proxy = Socks5Proxy(this, 1080)
         
-        Log.d(TAG, "Components initialized")
+        // Initialize HEV tunnel components (第二階段新增)
+        if (MigrationFlags.USE_HEV_TUNNEL) {
+            hevTunnelManager = HevTunnelManager()
+            configManager = ConfigManager(this)
+            tunnelMonitor = TunnelMonitor(hevTunnelManager)
+        }
+        
+        Log.d(TAG, "Components initialized (HEV Tunnel: ${MigrationFlags.USE_HEV_TUNNEL})")
     }
     
     private fun createPacketProcessor() {
@@ -263,6 +424,17 @@ class ZyxelVpnService : VpnService() {
     override fun onDestroy() {
         super.onDestroy()
         stopVpn()
+        
+        // 清理 HEV tunnel 組件
+        if (MigrationFlags.USE_HEV_TUNNEL) {
+            if (::tunnelMonitor.isInitialized) {
+                tunnelMonitor.cleanup()
+            }
+            if (::hevTunnelManager.isInitialized) {
+                hevTunnelManager.cleanup()
+            }
+        }
+        
         serviceScope.cancel()
         Log.d(TAG, "ZyxelVpnService destroyed")
     }
@@ -294,13 +466,50 @@ class ZyxelVpnService : VpnService() {
      * Get real-time statistics
      */
     fun getRealtimeStats(): SessionStats {
-        return sessionManager.getStats()
+        return if (MigrationFlags.USE_HEV_TUNNEL) {
+            // HEV tunnel 模式下，統計資訊主要來自代理伺服器
+            SessionStats(
+                totalSessions = 0, // HEV tunnel 不維護會話
+                activeSessions = 0,
+                bytesTransferred = socks5Proxy.getStats().bytesTransferred,
+                packetsProcessed = 0,
+                errorsCount = socks5Proxy.getStats().errorCount.toLong()
+            )
+        } else {
+            sessionManager.getStats()
+        }
     }
     
     /**
      * Get active sessions by protocol
      */
     fun getActiveSessionsByProtocol(protocol: Int): List<VpnSession> {
-        return sessionManager.getSessionsByProtocol(protocol)
+        return if (MigrationFlags.USE_HEV_TUNNEL) {
+            // HEV tunnel 模式下不維護詳細會話資訊
+            emptyList()
+        } else {
+            sessionManager.getSessionsByProtocol(protocol)
+        }
+    }
+    
+    /**
+     * 獲取 HEV tunnel 特定的狀態資訊
+     */
+    fun getHevTunnelInfo(): String? {
+        return if (MigrationFlags.USE_HEV_TUNNEL && ::configManager.isInitialized) {
+            buildString {
+                appendLine("=== HEV Tunnel Configuration ===")
+                appendLine("Config Path: ${configManager.getConfigPath()}")
+                appendLine("Log Path: ${configManager.getLogPath()}")
+                if (::hevTunnelManager.isInitialized) {
+                    appendLine("Tunnel Running: ${hevTunnelManager.isRunning()}")
+                }
+                if (::tunnelMonitor.isInitialized) {
+                    appendLine("Monitor Status: ${tunnelMonitor.status.value}")
+                }
+            }
+        } else {
+            null
+        }
     }
 }

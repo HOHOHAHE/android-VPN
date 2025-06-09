@@ -17,7 +17,7 @@ local.properties
 # Android Studio / IntelliJ IDEA
 .idea/workspace.xml
 .idea/tasks.xml
-.idea/gradle.xml
+.idea/gradle.xml                
 .idea/assetWizardSettings.xml
 .idea/dictionaries/
 .idea/libraries/

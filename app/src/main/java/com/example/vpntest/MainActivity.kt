@@ -159,7 +159,7 @@ class MainActivity : AppCompatActivity() {
             "Zyxel VPN Status: Disconnected"
         }
 
-        Log.d(TAG, "UI updated - Zyxel VPN running: $isRunning")
+//        Log.d(TAG, "UI updated - Zyxel VPN running: $isRunning")
     }
 
     private fun startUIUpdates() {
