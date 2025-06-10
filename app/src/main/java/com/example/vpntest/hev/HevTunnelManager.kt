@@ -52,6 +52,11 @@ class HevTunnelManager {
     private external fun isRunningNative(): Boolean
     private external fun getTunnelStatsNative(): String
     
+    // 官方 hev-socks5-tunnel JNI 方法
+    private external fun TProxyStartService(configPath: String, fd: Int)
+    private external fun TProxyStopService()
+    private external fun TProxyGetStats(): LongArray
+    
     // 狀態管理
     private val isInitialized = AtomicBoolean(false)
     private val managerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
