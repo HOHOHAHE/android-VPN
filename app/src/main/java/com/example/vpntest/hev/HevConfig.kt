@@ -47,6 +47,7 @@ data class HevTunnelConfig(
             appendLine("  port: ${socks5.port}")
             appendLine("  username: ${socks5.username ?: "~"}")
             appendLine("  password: ${socks5.password ?: "~"}")
+            appendLine("  udp: 'udp'") // Always use UDP for SOCKS5
             appendLine()
             
             appendLine("tcp:")
