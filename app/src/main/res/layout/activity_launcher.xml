@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/launcher"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/design_default_color_primary_variant"
+    android:padding="24dp"
+    tools:context=".LauncherActivity">
+
+    <!-- App Logo/Icon -->
+    <ImageView
+        android:id="@+id/appIcon"
+        android:layout_width="120dp"
+        android:layout_height="120dp"
+        android:layout_marginTop="64dp"
+        android:contentDescription="App Icon"
+        android:src="@mipmap/ic_launcher"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Welcome Title -->
+    <TextView
+        android:id="@+id/appTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="VPN 安全連線"
+        android:textColor="@android:color/white"
+        android:textSize="28sp"
+        android:textStyle="bold"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/appIcon" />
+
+    <!-- Welcome Message -->
+    <TextView
+        android:id="@+id/welcomeText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="center"
+        android:text="歡迎使用 VPN 應用程式\n\n透過 hev-socks5-tunnel 技術\n提供安全穩定的網路連線"
+        android:textColor="@android:color/white"
+        android:textSize="16sp"
+        android:lineSpacingMultiplier="1.2"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/appTitle" />
+
+    <!-- Enter Main Button -->
+    <Button
+        android:id="@+id/enterMainButton"
+        android:layout_width="0dp"
+        android:layout_height="56dp"
+        android:layout_marginTop="48dp"
+        android:layout_marginHorizontal="32dp"
+        android:background="@color/design_default_color_primary"
+        android:text="進入 VPN 控制台"
+        android:textColor="@android:color/white"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/welcomeText" />
+
+    <!-- About Button -->
+    <Button
+        android:id="@+id/aboutButton"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:layout_marginTop="16dp"
+        android:layout_marginHorizontal="32dp"
+        android:background="@android:color/transparent"
+        android:text="關於應用程式"
+        android:textColor="@android:color/white"
+        android:textSize="16sp"
+        style="?android:attr/borderlessButtonStyle"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/enterMainButton" />
+
+    <!-- Version Info -->
+    <TextView
+        android:id="@+id/versionText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"
+        android:text="版本 1.0 - 2025"
+        android:textColor="@android:color/white"
+        android:textSize="12sp"
+        android:alpha="0.7"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

@@ -17,6 +17,15 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.*
+import io.github.hohohahe.nekitkotlin.rule.RuleManager
+import io.github.hohohahe.nekitkotlin.rule.AllRule
+import io.github.hohohahe.nekitkotlin.socket.adapter.factory.DirectAdapterFactory
+import io.github.hohohahe.nekitkotlin.proxyserver.NettyProxyServer
+import io.github.hohohahe.nekitkotlin.proxyserver.ProxyType
+import io.github.hohohahe.nekitkotlin.core.Port
+import io.github.hohohahe.nekitkotlin.core.IpAddress
+import java.net.NetworkInterface
+import java.net.Inet4Address
 
 class MainActivity : AppCompatActivity() {
     companion object {
@@ -24,10 +33,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private lateinit var vpnToggleButton: Button
+    private lateinit var proxyServerToggleButton: Button
     private lateinit var statusText: TextView
     private var vpnService: ZyxelVpnService? = null
     private var isServiceBound = false
     private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    
+    // ProxyServer 相關變數 - 簡化版本
+    private var isProxyServerRunning = false
+    private var proxyServerJob: Job? = null
+    private var proxyServer: NettyProxyServer? = null
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -84,10 +99,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupUI() {
         vpnToggleButton = findViewById(R.id.vpnToggleButton)
+        proxyServerToggleButton = findViewById(R.id.proxyServerToggleButton)
         statusText = findViewById(R.id.statusText)
 
         vpnToggleButton.setOnClickListener {
             toggleVpn()
+        }
+        
+        proxyServerToggleButton.setOnClickListener {
+            toggleProxyServer()
         }
 
         // Start periodic UI updates
@@ -143,6 +163,150 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun toggleProxyServer() {
+        if (isProxyServerRunning) {
+            stopProxyServer()
+        } else {
+            startProxyServer()
+        }
+    }
+    
+    private fun getLanIpAddress(): String? {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val networkInterface = interfaces.nextElement()
+                // 跳過回環和非活動介面
+                if (networkInterface.isLoopback || !networkInterface.isUp) {
+                    continue
+                }
+                
+                val addresses = networkInterface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val address = addresses.nextElement()
+                    // 只取 IPv4 地址且不是回環地址
+                    if (address is Inet4Address && !address.isLoopbackAddress) {
+                        val ip = address.hostAddress
+                        // 確保是私有網路 IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+                        if (ip != null && (ip.startsWith("192.168.") ||
+                                         ip.startsWith("10.") ||
+                                         ip.matches(Regex("172\\.(1[6-9]|2[0-9]|3[0-1])\\..*")))) {
+                            return ip
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get LAN IP address", e)
+        }
+        return null
+    }
+     
+    private fun startProxyServer() {
+        if (isProxyServerRunning) {
+            Toast.makeText(this, "Proxy Server 已經在運行中", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        mainScope.launch {
+            try {
+                // 獲取 LAN IP 地址
+                val lanIp = getLanIpAddress()
+                val bindAddress = if (lanIp != null) {
+                    IpAddress(lanIp)
+                } else {
+                    Log.w(TAG, "Could not get LAN IP, binding to all interfaces")
+                    null // 將綁定到 0.0.0.0 (所有介面)
+                }
+                
+                // 創建 RuleManager 實例 (使用 AllRule 搭配 DirectAdapterFactory)
+                val directAdapterFactory = DirectAdapterFactory()
+                val allRule = AllRule(directAdapterFactory)
+                val ruleManager = RuleManager(listOf(allRule))
+                
+                // 創建 SOCKS5 Proxy Server 在指定 IP 和 port 1080
+                proxyServer = NettyProxyServer(
+                    port = Port(1080),
+                    host = bindAddress,
+                    proxyType = ProxyType.SOCKS5,
+                    ruleManager = ruleManager
+                )
+                
+                // 啟動 ProxyServer
+                proxyServer?.start()
+                isProxyServerRunning = true
+                
+                val bindInfo = if (bindAddress != null) "${bindAddress.value}:1080" else "0.0.0.0:1080"
+                Log.i(TAG, "=== SOCKS5 Proxy Server started on $bindInfo ===")
+                Log.i(TAG, "Server is running: ${proxyServer?.isRunning()}")
+                Log.i(TAG, "Waiting for SOCKS5 connections...")
+                Toast.makeText(this@MainActivity, "SOCKS5 代理已啟動 ($bindInfo)", Toast.LENGTH_SHORT).show()
+                updateUI()
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start Proxy Server", e)
+                Toast.makeText(this@MainActivity, "無法啟動 Proxy Server: ${e.message}", Toast.LENGTH_LONG).show()
+                isProxyServerRunning = false
+                updateUI()
+            }
+        }
+        
+        // 延遲測試連接（給服務器一些時間啟動）
+        mainScope.launch {
+            delay(2000) // 等待 2 秒
+            testProxyConnection()
+        }
+    }
+    
+    private suspend fun testProxyConnection() {
+        try {
+            val lanIp = getLanIpAddress()
+            val testAddress = lanIp ?: "127.0.0.1"
+            
+            // 嘗試連接到代理端口
+            withContext(Dispatchers.IO) {
+                try {
+                    val socket = java.net.Socket()
+                    socket.connect(java.net.InetSocketAddress(testAddress, 1080), 5000)
+                    socket.close()
+                    
+                    Log.i(TAG, "✅ SOCKS5 代理端口 $testAddress:1080 可以連接")
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "✅ 代理端口測試成功", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "❌ 無法連接到代理端口 $testAddress:1080: ${e.message}")
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@MainActivity, "❌ 代理端口測試失敗", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "代理連接測試出錯", e)
+        }
+    }
+    
+    private fun stopProxyServer() {
+        if (!isProxyServerRunning) {
+            Toast.makeText(this, "Proxy Server 未在運行", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        try {
+            proxyServer?.stop()
+            proxyServer = null
+            isProxyServerRunning = false
+            
+            Log.d(TAG, "Proxy Server stopped")
+            Toast.makeText(this, "Proxy Server 已停止", Toast.LENGTH_SHORT).show()
+            updateUI()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop Proxy Server", e)
+            Toast.makeText(this, "停止 Proxy Server 時發生錯誤: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun bindVpnService() {
         val intent = Intent(this, ZyxelVpnService::class.java)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
@@ -150,14 +314,25 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUI() {
         val service = vpnService
-        val isRunning = service?.isVpnRunning() ?: false
+        val isVpnRunning = service?.isVpnRunning() ?: false
 
-        vpnToggleButton.text = if (isRunning) "Disconnect VPN" else "Connect VPN"
-        statusText.text = if (isRunning) {
-            "Zyxel VPN Status: Connected\nSOCKS5 Server: 127.0.0.1:1080"
+        // 更新 VPN 按鈕
+        vpnToggleButton.text = if (isVpnRunning) "Disconnect VPN" else "Connect VPN"
+        
+        // 更新 ProxyServer 按鈕
+        proxyServerToggleButton.text = if (isProxyServerRunning) "停止 Proxy Server" else "啟動 Proxy Server"
+        
+        // 更新狀態文字
+        val vpnStatus = if (isVpnRunning) "Connected" else "Disconnected"
+        val proxyStatus = if (isProxyServerRunning) {
+            val lanIp = getLanIpAddress()
+            val bindInfo = if (lanIp != null) "$lanIp:1080" else "0.0.0.0:1080"
+            "Running ($bindInfo)"
         } else {
-            "Zyxel VPN Status: Disconnected"
+            "Stopped"
         }
+        
+        statusText.text = "Zyxel VPN Status: $vpnStatus\nProxy Server: $proxyStatus"
 
 //        Log.d(TAG, "UI updated - Zyxel VPN running: $isRunning")
     }
@@ -173,6 +348,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        
+        // 停止 ProxyServer
+        if (isProxyServerRunning) {
+            try {
+                proxyServer?.stop()
+                proxyServer = null
+                isProxyServerRunning = false
+                Log.d(TAG, "Proxy Server stopped in onDestroy")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping Proxy Server in onDestroy", e)
+            }
+        }
+        
+        // 清理其他資源
         mainScope.cancel()
         if (isServiceBound) {
             unbindService(serviceConnection)
