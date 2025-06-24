@@ -3,6 +3,8 @@ package com.example.vpntest.proxy
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.util.Log
 import com.example.vpntest.core.ProxyConnector
@@ -17,6 +19,8 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * SOCKS5 proxy server implementation
@@ -54,7 +58,7 @@ class Socks5Proxy(
         proxyScope.launch {
             try {
                 serverSocket = ServerSocket()
-                serverSocket?.bind(InetSocketAddress("127.0.0.1", port))
+                serverSocket?.bind(InetSocketAddress("10.0.0.98", port))
                 isRunning = true
                 
                 Log.i(TAG, "SOCKS5 server started on port $port")
@@ -269,17 +273,17 @@ class Socks5Proxy(
             val targetSocket = Socket()
             targetSocket.soTimeout = 15000 // 15 second timeout
             
-            // Get underlying network to bypass VPN routing
+            // Request CELLULAR network to bypass VPN routing
             val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val underlyingNetwork = getUnderlyingNetwork(connectivityManager)
+            val underlyingNetwork = requestCellularNetwork(connectivityManager)
             
             // Bind socket to underlying network if available
             if (underlyingNetwork != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 try {
                     underlyingNetwork.bindSocket(targetSocket)
-                    Log.d(TAG, "SOCKS5 target socket bound to underlying network")
+                    Log.d(TAG, "SOCKS5 target socket bound to requested CELLULAR network: $underlyingNetwork")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed to bind SOCKS5 socket to underlying network, using default routing", e)
+                    Log.w(TAG, "Failed to bind SOCKS5 socket to requested network, using default routing", e)
                 }
             }
             
@@ -364,81 +368,78 @@ class Socks5Proxy(
         }
     }
     
-    private fun getUnderlyingNetwork(connectivityManager: ConnectivityManager): Network? {
+    private fun requestCellularNetwork(connectivityManager: ConnectivityManager): Network? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            Log.d(TAG, "Underlying network selection requires API level 23+")
+            Log.d(TAG, "Network request requires API level 23+")
             return null
         }
 
-        var bestNetwork: Network? = null
-        var bestNetworkValidated = false
+        return try {
+            // 建立 CELLULAR 網路請求
+            val networkRequest = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
 
-        try {
-            val networks = connectivityManager.allNetworks
-            if (networks.isEmpty()) {
-                Log.w(TAG, "No networks available.")
+            Log.d(TAG, "Requesting CELLULAR network...")
+
+            val latch = CountDownLatch(1)
+            var requestedNetwork: Network? = null
+            var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.d(TAG, "CELLULAR network available: $network")
+                    requestedNetwork = network
+                    latch.countDown()
+                }
+
+                override fun onUnavailable() {
+                    Log.w(TAG, "CELLULAR network unavailable")
+                    latch.countDown()
+                }
+
+                override fun onLost(network: Network) {
+                    Log.w(TAG, "CELLULAR network lost: $network")
+                }
+            }
+
+            // 請求網路
+            connectivityManager.requestNetwork(networkRequest, networkCallback)
+
+            // 等待網路可用，最多等待 5 秒
+            val available = latch.await(5, TimeUnit.SECONDS)
+            
+            // 立即取消註冊回調
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister network callback", e)
+            }
+
+            if (available && requestedNetwork != null) {
+                Log.i(TAG, "Successfully obtained CELLULAR network: $requestedNetwork")
+                return requestedNetwork
+            } else {
+                Log.w(TAG, "Failed to obtain CELLULAR network within timeout")
                 return null
             }
 
-            Log.d(TAG, "Available networks: ${networks.size}")
-            networks.forEachIndexed { index, network ->
-                val capabilities: android.net.NetworkCapabilities? = try {
-                    connectivityManager.getNetworkCapabilities(network)
-                } catch (e: SecurityException) {
-                    Log.w(TAG, "Failed to get capabilities for network $network due to SecurityException: ${e.message}")
-                    null
-                }
-
-                if (capabilities != null) {
-                    val hasInternet = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    val isNotVpn = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                    val isValidated = capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                    val transportTypes = getTransportTypes(capabilities)
-
-                    Log.d(TAG, "Network #$index ($network): Internet=$hasInternet, NotVPN=$isNotVpn, Validated=$isValidated, Transports=$transportTypes")
-
-                    if (hasInternet && isNotVpn) {
-                        if (isValidated) {
-                            if (!bestNetworkValidated) { // Prefer validated if current best is not
-                                Log.i(TAG, "Selecting validated network: $network ($transportTypes)")
-                                bestNetwork = network
-                                bestNetworkValidated = true
-                            } else {
-                                Log.d(TAG, "Found another validated network: $network ($transportTypes), keeping current best: $bestNetwork")
-                            }
-                        } else if (bestNetwork == null) { // No validated network found yet, take this one for now
-                            Log.i(TAG, "Selecting non-validated network (no validated found yet): $network ($transportTypes)")
-                            bestNetwork = network
-                        } else {
-                            Log.d(TAG, "Found non-validated network: $network ($transportTypes), but already have a candidate: $bestNetwork (Validated: $bestNetworkValidated)")
-                        }
-                    }
-                } else {
-                    Log.d(TAG, "Network #$index ($network): Capabilities are null.")
-                }
-            }
-
-            if (bestNetwork != null) {
-                Log.i(TAG, "Final selected underlying network: $bestNetwork (Validated: $bestNetworkValidated)")
-            } else {
-                Log.w(TAG, "No suitable underlying network found (must have INTERNET and NOT_VPN).")
-            }
-            return bestNetwork
         } catch (e: Exception) {
-            Log.e(TAG, "Error finding underlying network for SOCKS5", e)
+            Log.e(TAG, "Error requesting CELLULAR network", e)
             return null
         }
     }
 
-    private fun getTransportTypes(capabilities: android.net.NetworkCapabilities): String {
+    private fun getTransportTypes(capabilities: NetworkCapabilities): String {
         val types = mutableListOf<String>()
-        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) types.add("CELLULAR")
-        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) types.add("WIFI")
-        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_BLUETOOTH)) types.add("BLUETOOTH")
-        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) types.add("ETHERNET")
-        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) types.add("VPN")
-        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI_AWARE)) types.add("WIFI_AWARE")
-        if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_LOWPAN)) types.add("LOWPAN")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) types.add("CELLULAR")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) types.add("WIFI")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)) types.add("BLUETOOTH")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) types.add("ETHERNET")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) types.add("VPN")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI_AWARE)) types.add("WIFI_AWARE")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_LOWPAN)) types.add("LOWPAN")
         return types.joinToString(", ")
     }
 }
