@@ -24,6 +24,7 @@ import io.github.hohohahe.nekitkotlin.proxyserver.NettyProxyServer
 import io.github.hohohahe.nekitkotlin.proxyserver.ProxyType
 import io.github.hohohahe.nekitkotlin.core.Port
 import io.github.hohohahe.nekitkotlin.core.IpAddress
+import com.example.vpntest.proxy.Socks5Proxy
 import java.net.NetworkInterface
 import java.net.Inet4Address
 
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private var isProxyServerRunning = false
     private var proxyServerJob: Job? = null
     private var proxyServer: NettyProxyServer? = null
+    private var socks5Proxy: Socks5Proxy? = null
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -243,6 +245,15 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this@MainActivity, "SOCKS5 代理已啟動 ($bindInfo)", Toast.LENGTH_SHORT).show()
                 updateUI()
                 
+                // 創建並啟動 Socks5Proxy server（端口 1081）
+                try {
+                    socks5Proxy = Socks5Proxy(this@MainActivity, 1081)
+                    socks5Proxy?.start()
+                    Log.i(TAG, "=== Additional Socks5Proxy server started on port 1081 ===")
+                    Toast.makeText(this@MainActivity, "額外 SOCKS5 代理已啟動 (1081)", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start Socks5Proxy server", e)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start Proxy Server", e)
                 Toast.makeText(this@MainActivity, "無法啟動 Proxy Server: ${e.message}", Toast.LENGTH_LONG).show()
@@ -295,6 +306,11 @@ class MainActivity : AppCompatActivity() {
         try {
             proxyServer?.stop()
             proxyServer = null
+            
+            // 停止 Socks5Proxy server
+            socks5Proxy?.stop()
+            socks5Proxy = null
+            
             isProxyServerRunning = false
             
             Log.d(TAG, "Proxy Server stopped")
