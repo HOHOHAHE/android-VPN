@@ -1,6 +1,7 @@
 package io.github.hohohahe.nekitkotlin.tunnel
 
 // Add RuleManager import
+import android.util.Log
 import io.github.hohohahe.nekitkotlin.rule.RuleManager
 import io.github.hohohahe.nekitkotlin.socket.adapter.AdapterSocket
 // Remove DirectAdapterSocket import if no longer directly used for creation
@@ -8,11 +9,10 @@ import io.github.hohohahe.nekitkotlin.socket.proxy.ProxySocket
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.filter
-import mu.KotlinLogging
 import java.io.IOException
 import java.nio.ByteBuffer
 
-private val logger = KotlinLogging.logger {}
+private const val TAG = "Tunnel"
 
 class Tunnel(
     private val scope: CoroutineScope,
@@ -26,46 +26,62 @@ class Tunnel(
         job = scope.launch(CoroutineName("tunnel-${proxySocket.remoteAddress}")) {
             var currentAdapter: AdapterSocket? = null // Define here to be accessible in finally
             try {
-                logger.info { "Tunnel opening for client: ${proxySocket.remoteAddress}" }
+                Log.i(TAG, "Tunnel opening for client: ${proxySocket.remoteAddress}")
+                Log.d(TAG, "Tunnel: Waiting for ConnectSession from proxy socket...")
                 val connectSession = proxySocket.getConnectSession().first()
-                logger.info { "Tunnel received session: $connectSession" }
+                Log.i(TAG, "Tunnel received session: $connectSession")
 
                 // Use RuleManager to get the AdapterFactory, then the AdapterSocket
                 if (adapterSocket == null) { // Only create if not already injected (e.g. for tests)
+                    Log.d(TAG, "Tunnel: Getting adapter factory from rule manager for session: $connectSession")
                     val adapterFactory = ruleManager.match(connectSession)
-                    logger.debug { "Tunnel: Using ${adapterFactory::class.simpleName} for session: $connectSession" }
+                    Log.d(TAG, "Tunnel: Using ${adapterFactory::class.simpleName} for session: $connectSession")
+                    Log.d(TAG, "Tunnel: Creating adapter socket...")
                     adapterSocket = adapterFactory.getAdapter(connectSession)
                 }
                 currentAdapter = adapterSocket ?: throw IllegalStateException("AdapterSocket could not be created or injected")
 
-
+                Log.d(TAG, "Tunnel: Opening adapter socket to ${connectSession.host}:${connectSession.port}...")
                 currentAdapter.openSocket(connectSession)
-                logger.info { "Adapter socket opened to ${connectSession.host}:${connectSession.port} via ${currentAdapter::class.simpleName}" }
+                Log.i(TAG, "Adapter socket opened to ${connectSession.host}:${connectSession.port} via ${currentAdapter::class.simpleName}")
 
+                Log.d(TAG, "Tunnel: Waiting for adapter socket to be ready...")
                 currentAdapter.isReady.filter { it }.first()
-                logger.info { "Adapter socket is ready. Responding success to proxy." }
+                Log.i(TAG, "Adapter socket is ready. Responding success to proxy.")
 
+                Log.d(TAG, "Tunnel: Sending success response to proxy...")
                 proxySocket.respondToSuccess()
 
-                logger.info { "Starting data relay between proxy (${proxySocket.remoteAddress}) and adapter (${currentAdapter.remoteAddress})" }
+                Log.i(TAG, "Starting data relay between proxy (${proxySocket.remoteAddress}) and adapter (${currentAdapter.remoteAddress})")
                 val proxyToAdapterJob = launchRelay("P->A", proxySocket, currentAdapter)
                 val adapterToProxyJob = launchRelay("A->P", currentAdapter, proxySocket)
 
+                Log.d(TAG, "Tunnel: Both relay jobs started, waiting for completion...")
                 listOf(proxyToAdapterJob, adapterToProxyJob).joinAll()
+                Log.d(TAG, "Tunnel: All relay jobs completed")
 
             } catch (e: Exception) {
                 if (e is CancellationException) {
-                    logger.info { "Tunnel for ${proxySocket.remoteAddress} cancelled." }
+                    Log.i(TAG, "Tunnel for ${proxySocket.remoteAddress} cancelled.")
                     throw e
                 }
-                logger.error(e) { "Error in tunnel for ${proxySocket.remoteAddress}: ${e.message}" }
+                Log.e(TAG, "Error in tunnel for ${proxySocket.remoteAddress}: ${e.javaClass.simpleName} - ${e.message}", e)
+                // Add specific error context
+                when (e) {
+                    is java.util.NoSuchElementException -> Log.e(TAG, "Tunnel: ConnectSession flow was empty for ${proxySocket.remoteAddress}")
+                    is kotlinx.coroutines.TimeoutCancellationException -> Log.e(TAG, "Tunnel: Timeout waiting for operation for ${proxySocket.remoteAddress}")
+                    is java.io.IOException -> Log.e(TAG, "Tunnel: IO error for ${proxySocket.remoteAddress}: ${e.message}")
+                    is IllegalStateException -> Log.e(TAG, "Tunnel: State error for ${proxySocket.remoteAddress}: ${e.message}")
+                    else -> Log.e(TAG, "Tunnel: Unexpected error type for ${proxySocket.remoteAddress}: ${e.javaClass.name}")
+                }
                 try {
+                    Log.d(TAG, "Tunnel: Sending failure response to proxy...")
                     proxySocket.respondToFailure(e.message ?: "Tunnel setup failed")
                 } catch (responseEx: Exception) {
-                    logger.error(responseEx) { "Failed to send failure response to proxy." }
+                    Log.e(TAG, "Failed to send failure response to proxy.", responseEx)
                 }
             } finally {
-                logger.info { "Tunnel for ${proxySocket.remoteAddress} closing." }
+                Log.i(TAG, "Tunnel for ${proxySocket.remoteAddress} closing.")
                 // Use currentAdapter for closing, as adapterSocket property might be reassigned or was null initially
                 closeResources(proxySocket, currentAdapter)
             }
@@ -77,12 +93,12 @@ class Tunnel(
          try {
             proxy?.close()
         } catch (e: Exception) {
-            logger.error(e) { "Error closing proxy socket during tunnel cleanup." }
+            Log.e(TAG, "Error closing proxy socket during tunnel cleanup.", e)
         }
         try {
             adapter?.close()
         } catch (e: Exception) {
-            logger.error(e) { "Error closing adapter socket during tunnel cleanup." }
+            Log.e(TAG, "Error closing adapter socket during tunnel cleanup.", e)
         }
     }
 
@@ -98,20 +114,20 @@ class Tunnel(
             while (isActive) {
                 buffer.clear()
                 val bytesRead = source.read(buffer)
-                if (bytesRead == -1) { logger.debug { "Relay $name: source EOF." }; break }
+                if (bytesRead == -1) { Log.d(TAG, "Relay $name: source EOF."); break }
                 if (bytesRead == 0) { delay(10); continue }
-                logger.trace { "Relay $name: read $bytesRead bytes." }
+                Log.v(TAG, "Relay $name: read $bytesRead bytes.")
                 buffer.flip()
                 while (buffer.hasRemaining() && isActive) {
                     val bytesWritten = destination.write(buffer)
-                    logger.trace { "Relay $name: wrote $bytesWritten bytes." }
+                    Log.v(TAG, "Relay $name: wrote $bytesWritten bytes.")
                      if (bytesWritten == 0 && buffer.hasRemaining()) { delay(50); } // Small delay if write didn't consume all
                 }
             }
-        } catch (e: IOException) { logger.warn(e) { "Relay $name: IO error: ${e.message}" } }
-        catch (e: CancellationException) { logger.debug { "Relay $name: Cancelled." } }
-        catch (e: Exception) { logger.error(e) { "Relay $name: Unexpected error: ${e.message}" } }
-        finally { logger.debug { "Relay $name: finished." } }
+        } catch (e: IOException) { Log.w(TAG, "Relay $name: IO error: ${e.message}", e) }
+        catch (e: CancellationException) { Log.d(TAG, "Relay $name: Cancelled.") }
+        catch (e: Exception) { Log.e(TAG, "Relay $name: Unexpected error: ${e.message}", e) }
+        finally { Log.d(TAG, "Relay $name: finished.") }
     }
 
     private fun CoroutineScope.launchRelay(
@@ -124,24 +140,24 @@ class Tunnel(
             while (isActive) {
                 buffer.clear()
                 val bytesRead = source.read(buffer)
-                if (bytesRead == -1) { logger.debug { "Relay $name: source EOF." }; break }
+                if (bytesRead == -1) { Log.d(TAG, "Relay $name: source EOF."); break }
                 if (bytesRead == 0) { delay(10); continue }
-                logger.trace { "Relay $name: read $bytesRead bytes." }
+                Log.v(TAG, "Relay $name: read $bytesRead bytes.")
                 buffer.flip()
                 while (buffer.hasRemaining() && isActive) {
                     val bytesWritten = destination.write(buffer)
-                    logger.trace { "Relay $name: wrote $bytesWritten bytes." }
+                    Log.v(TAG, "Relay $name: wrote $bytesWritten bytes.")
                     if (bytesWritten == 0 && buffer.hasRemaining()) { delay(50); } // Small delay
                 }
             }
-        } catch (e: IOException) { logger.warn(e) { "Relay $name: IO error: ${e.message}" } }
-        catch (e: CancellationException) { logger.debug { "Relay $name: Cancelled." } }
-        catch (e: Exception) { logger.error(e) { "Relay $name: Unexpected error: ${e.message}" } }
-        finally { logger.debug { "Relay $name: finished." } }
+        } catch (e: IOException) { Log.w(TAG, "Relay $name: IO error: ${e.message}", e) }
+        catch (e: CancellationException) { Log.d(TAG, "Relay $name: Cancelled.") }
+        catch (e: Exception) { Log.e(TAG, "Relay $name: Unexpected error: ${e.message}", e) }
+        finally { Log.d(TAG, "Relay $name: finished.") }
     }
 
     fun close() { // This method is for external calls to initiate closure
-        logger.info { "Tunnel explicitly closing resources via close()." }
+        Log.i(TAG, "Tunnel explicitly closing resources via close().")
         job?.cancel("Tunnel closing via external call")
         // The actual resource cleanup is now handled by the finally block in openAndRelay
         // and the closeResources helper.

@@ -1,5 +1,6 @@
 package io.github.hohohahe.nekitkotlin.socket.raw
 
+import android.util.Log
 import io.github.hohohahe.nekitkotlin.core.IpAddress
 import io.github.hohohahe.nekitkotlin.core.Port
 import io.netty.bootstrap.Bootstrap
@@ -14,13 +15,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import mu.KotlinLogging
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-private val logger = KotlinLogging.logger {}
+private const val TAG = "NettyRawTcpSocket"
 
 class NettyRawTcpSocket : RawTcpSocket {
 
@@ -80,7 +80,7 @@ class NettyRawTcpSocket : RawTcpSocket {
                         bufferCopy.put(nioBuffer)
                         bufferCopy.flip()
                         if (!readChannelInternal.trySend(bufferCopy).isSuccess) {
-                             logger.warn { "Failed to send data to readChannel for ${ctx.channel().remoteAddress()}, channel may be closed or full." }
+                             Log.w(TAG, "Failed to send data to readChannel for ${ctx.channel().remoteAddress()}, channel may be closed or full.")
                         }
                     }
                     msg.release()
@@ -90,13 +90,13 @@ class NettyRawTcpSocket : RawTcpSocket {
             }
 
             override fun channelInactive(ctx: ChannelHandlerContext) {
-                logger.debug { "NettyRawTcpSocket: Channel inactive: ${ctx.channel().remoteAddress()}" }
+                Log.d(TAG, "NettyRawTcpSocket: Channel inactive: ${ctx.channel().remoteAddress()}")
                 readChannelInternal.close()
                 super.channelInactive(ctx)
             }
 
             override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
-                logger.error(cause) { "NettyRawTcpSocket: Exception in pipeline for ${ctx.channel().remoteAddress()}" }
+                Log.e(TAG, "NettyRawTcpSocket: Exception in pipeline for ${ctx.channel().remoteAddress()}", cause)
                 readChannelInternal.close(cause)
                 ctx.close() // Close Netty channel on exception
             }
@@ -123,7 +123,7 @@ class NettyRawTcpSocket : RawTcpSocket {
             throw IllegalStateException("Cannot call connect() on a server-accepted socket.")
         }
         if (isOpen) {
-            logger.warn { "Socket already connected or connecting." }
+            Log.w(TAG, "Socket already connected or connecting.")
             return
         }
         val socketAddress = InetSocketAddress(host, port.value)
@@ -147,15 +147,15 @@ class NettyRawTcpSocket : RawTcpSocket {
         suspendCancellableCoroutine<Unit> { continuation ->
             connectFuture.addListener { future ->
                 if (future.isSuccess) {
-                    logger.debug { "Connection successful to $host:${port.value}" }
+                    Log.d(TAG, "Connection successful to $host:${port.value}")
                     if (continuation.isActive) continuation.resume(Unit)
                 } else {
-                    logger.error(future.cause()) { "Failed to connect to $host:${port.value}" }
+                    Log.e(TAG, "Failed to connect to $host:${port.value}", future.cause())
                      if (continuation.isActive) continuation.resumeWithException(future.cause() ?: RuntimeException("Unknown connection error"))
                 }
             }
             continuation.invokeOnCancellation {
-                logger.debug { "Connection attempt cancelled for $host:${port.value}" }
+                Log.d(TAG, "Connection attempt cancelled for $host:${port.value}")
                 if (connectFuture.isCancellable) connectFuture.cancel(false)
             }
         }
@@ -174,7 +174,7 @@ class NettyRawTcpSocket : RawTcpSocket {
             val length = receivedData.remaining()
 
             if (length > buffer.remaining()) {
-                logger.warn { "Read buffer (${buffer.remaining()}) too small for received data (${length}). Truncating." }
+                Log.w(TAG, "Read buffer (${buffer.remaining()}) too small for received data (${length}). Truncating.")
                 val originalLimit = receivedData.limit()
                 receivedData.limit(receivedData.position() + buffer.remaining())
                 buffer.put(receivedData)
@@ -189,7 +189,7 @@ class NettyRawTcpSocket : RawTcpSocket {
             buffer.put(receivedData)
             length
         } catch (e: kotlinx.coroutines.channels.ClosedReceiveChannelException) {
-            logger.debug { "Read channel closed for ${channel?.remoteAddress()}, likely EOF." }
+            Log.d(TAG, "Read channel closed for ${channel?.remoteAddress()}, likely EOF.")
             -1
         }
     }
@@ -209,18 +209,18 @@ class NettyRawTcpSocket : RawTcpSocket {
                 if (future.isSuccess) {
                     if (continuation.isActive) continuation.resume(bytesToWrite)
                 } else {
-                    logger.error(future.cause()) { "Failed to write ${bytesToWrite} bytes to ${ch.remoteAddress()}"}
+                    Log.e(TAG, "Failed to write ${bytesToWrite} bytes to ${ch.remoteAddress()}", future.cause())
                     if (continuation.isActive) continuation.resumeWithException(future.cause() ?: RuntimeException("Unknown write error"))
                 }
             }
              continuation.invokeOnCancellation {
-                logger.warn { "Write operation to ${ch.remoteAddress()} was cancelled." }
+                Log.w(TAG, "Write operation to ${ch.remoteAddress()} was cancelled.")
             }
         }
     }
 
     override fun close() {
-        logger.debug { "Closing NettyRawTcpSocket for ${channel?.remoteAddress()}." }
+        Log.d(TAG, "Closing NettyRawTcpSocket for ${channel?.remoteAddress()}.")
         readChannelInternal.close()
         channel?.close()?.awaitUninterruptibly()
         channel = null // Mark as closed
@@ -228,7 +228,7 @@ class NettyRawTcpSocket : RawTcpSocket {
         // Shut down event loop group only if this instance created and owns it (client-side default)
         eventLoopGroupToShutDown?.let {
             if (!it.isShuttingDown && !it.isShutdown) {
-                logger.debug{"Shutting down owned EventLoopGroup for NettyRawTcpSocket"}
+                Log.d(TAG, "Shutting down owned EventLoopGroup for NettyRawTcpSocket")
                 it.shutdownGracefully().awaitUninterruptibly(500, java.util.concurrent.TimeUnit.MILLISECONDS)
             }
         }

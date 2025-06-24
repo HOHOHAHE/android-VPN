@@ -1,5 +1,6 @@
 package io.github.hohohahe.nekitkotlin.socket.proxy
 
+import android.util.Log
 import io.github.hohohahe.nekitkotlin.core.ConnectSession
 import io.github.hohohahe.nekitkotlin.core.IpAddress
 import io.github.hohohahe.nekitkotlin.core.Port
@@ -9,14 +10,13 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.withContext
-import mu.KotlinLogging
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
-private val logger = KotlinLogging.logger {}
+private const val TAG = "Socks5ProxySocket"
 
 // SOCKS5 constants
 private const val SOCKS_VERSION_5: Byte = 0x05
@@ -54,27 +54,47 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
 
     suspend fun handleIncomingConnection() {
         try {
+            Log.d(TAG, "SOCKS5: Starting handleIncomingConnection for ${remoteAddress}")
+            
+            // The connection stability check is now handled by NettyProxyServer
+            // before this method is called, so we can proceed directly with handshake
+            
             performHandshake()
+            Log.d(TAG, "SOCKS5: Handshake completed for ${remoteAddress}")
             val session = readRequestAndParseSession()
+            Log.d(TAG, "SOCKS5: Request parsed successfully for ${remoteAddress}, target: ${session.host}:${session.port}")
             connectSessionChannel.send(session)
             connectSessionChannel.close() // One session per socket
+            Log.d(TAG, "SOCKS5: ConnectSession sent to channel for ${remoteAddress}")
         } catch (e: Exception) {
-            logger.error(e) { "SOCKS5 handshake/request failed for ${remoteAddress}: ${e.message}" }
+            Log.e(TAG, "SOCKS5 handshake/request failed for ${remoteAddress}: ${e.javaClass.simpleName} - ${e.message}", e)
+            // Add specific error context
+            when (e) {
+                is java.io.IOException -> Log.e(TAG, "SOCKS5 IO Error for ${remoteAddress}: Client connection may have been interrupted")
+                is Socks5ErrorReplyException -> Log.e(TAG, "SOCKS5 Protocol Error for ${remoteAddress}: ${e.message} (Reply code: ${e.replyCode})")
+                is kotlinx.coroutines.channels.ClosedSendChannelException -> Log.e(TAG, "SOCKS5 Channel Error for ${remoteAddress}: ConnectSession channel was already closed")
+                else -> Log.e(TAG, "SOCKS5 Unexpected Error for ${remoteAddress}: ${e.javaClass.name}")
+            }
+            
             // Try to send a failure reply if possible, depending on where the error occurred.
             // If handshake failed early, client might not expect a SOCKS5 reply.
             if (e is Socks5ErrorReplyException) {
                  try {
+                    Log.d(TAG, "SOCKS5: Sending specific error reply (${e.replyCode}) to ${remoteAddress}")
                     sendReply(e.replyCode, null, null) // Use the specific reply code from the exception
                 } catch (replyEx: Exception) {
-                    logger.error(replyEx) {"Failed to send SOCKS5 error reply"}
+                    Log.e(TAG, "Failed to send SOCKS5 error reply to ${remoteAddress}", replyEx)
                 }
             } else if (clientSocket.isOpen) {
                 // Generic failure if not a specific SOCKS error
                 try {
+                    Log.d(TAG, "SOCKS5: Sending generic failure reply to ${remoteAddress}")
                     sendReply(REP_GENERAL_SOCKS_SERVER_FAILURE, null, null)
                 } catch (replyEx: Exception) {
-                     logger.error(replyEx) {"Failed to send generic SOCKS5 error reply"}
+                     Log.e(TAG, "Failed to send generic SOCKS5 error reply to ${remoteAddress}", replyEx)
                 }
+            } else {
+                Log.w(TAG, "SOCKS5: Cannot send error reply to ${remoteAddress}, client socket is already closed")
             }
             connectSessionChannel.close(e)
             close()
@@ -88,7 +108,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
         // +----+----------+----------+
         // | 1  |    1     | 1 to 255 |
         // +----+----------+----------+
-        logger.debug { "SOCKS5: Reading handshake from ${remoteAddress}" }
+        Log.d(TAG, "SOCKS5: Reading handshake from ${remoteAddress}")
         val verNmethods = readBytes(2)
         if (verNmethods[0] != SOCKS_VERSION_5) {
             throw Socks5ErrorReplyException("Unsupported SOCKS version: ${verNmethods[0]}", REP_GENERAL_SOCKS_SERVER_FAILURE)
@@ -107,7 +127,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
                 break
             }
         }
-        logger.debug { "SOCKS5: Client ${remoteAddress} offered methods: ${methods.joinToString()}, selected: $selectedMethod" }
+        Log.d(TAG, "SOCKS5: Client ${remoteAddress} offered methods: ${methods.joinToString()}, selected: $selectedMethod")
 
 
         // 3. Send server's method selection
@@ -135,7 +155,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
         // +----+-----+-------+------+----------+----------+
         // | 1  |  1  | X'00' |  1   | Variable |    2     |
         // +----+-----+-------+------+----------+----------+
-        logger.debug { "SOCKS5: Reading request from ${remoteAddress}" }
+        Log.d(TAG, "SOCKS5: Reading request from ${remoteAddress}")
         val verCmdRsvAtyp = readBytes(4)
         if (verCmdRsvAtyp[0] != SOCKS_VERSION_5) {
             throw Socks5ErrorReplyException("Invalid SOCKS version in request: ${verCmdRsvAtyp[0]}", REP_GENERAL_SOCKS_SERVER_FAILURE)
@@ -178,7 +198,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
         }
 
         val session = ConnectSession(host, Port(port))
-        logger.info { "SOCKS5 CONNECT request from ${remoteAddress} for ${session.host}:${session.port.value} (ATYP: $atyp)" }
+        Log.i(TAG, "SOCKS5 CONNECT request from ${remoteAddress} for ${session.host}:${session.port.value} (ATYP: $atyp)")
         return session
     }
 
@@ -218,12 +238,12 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
                 bndAddrBytes = inetBndAddr.address
             } else {
                 // Fallback or error if address type is unknown (should not happen with getByName)
-                logger.warn { "SOCKS5: Could not determine BND.ADDR type for $effectiveBoundAddr, defaulting to 0.0.0.0" }
+                Log.w(TAG, "SOCKS5: Could not determine BND.ADDR type for $effectiveBoundAddr, defaulting to 0.0.0.0")
                 atyp = ATYP_IPV4
                 bndAddrBytes = InetAddress.getByName("0.0.0.0").address
             }
         } catch (e: Exception) {
-             logger.warn(e) { "SOCKS5: Error resolving BND.ADDR $effectiveBoundAddr, defaulting to 0.0.0.0" }
+             Log.w(TAG, "SOCKS5: Error resolving BND.ADDR $effectiveBoundAddr, defaulting to 0.0.0.0", e)
              atyp = ATYP_IPV4
              bndAddrBytes = InetAddress.getByName("0.0.0.0").address
         }
@@ -234,7 +254,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
         replyBuffer.putShort(effectiveBoundPortVal.toShort())
 
         replyBuffer.flip()
-        logger.debug { "SOCKS5: Sending reply to ${remoteAddress}: REP=$rep, BND.ADDR=${IpAddress(effectiveBoundAddr)}, BND.PORT=$effectiveBoundPortVal" }
+        Log.d(TAG, "SOCKS5: Sending reply to ${remoteAddress}: REP=$rep, BND.ADDR=${IpAddress(effectiveBoundAddr)}, BND.PORT=$effectiveBoundPortVal")
         clientSocket.write(replyBuffer)
     }
 
@@ -247,34 +267,53 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
         // We need to retrieve it from the ConnectSession that was processed by the adapter.
         // Let's assume for now that the Tunnel doesn't pass this back, and we use defaults.
         // A better design would be respondToSuccess(finalConnectSession: ConnectSession)
-        logger.debug { "SOCKS5: Responding SUCCEEDED to ${remoteAddress}" }
+        Log.d(TAG, "SOCKS5: Responding SUCCEEDED to ${remoteAddress}")
         sendReply(REP_SUCCEEDED, localAddress, Port( (clientSocket.localAddress as? InetSocketAddress)?.port ?: 0))
     }
 
     override suspend fun respondToFailure(reason: String) {
         // This is a generic failure after request parsing.
         // Specific failures during handshake/request are handled by throwing Socks5ErrorReplyException.
-        logger.warn { "SOCKS5: Responding GENERAL_FAILURE to ${remoteAddress} due to: $reason" }
+        Log.w(TAG, "SOCKS5: Responding GENERAL_FAILURE to ${remoteAddress} due to: $reason")
         sendReply(REP_GENERAL_SOCKS_SERVER_FAILURE, null, null)
     }
 
     private suspend fun readBytes(count: Int): ByteArray {
+        Log.v(TAG, "SOCKS5: readBytes requesting $count bytes from ${remoteAddress}")
+        
         val buffer = ByteBuffer.allocate(count)
         var totalBytesRead = 0
+        var readAttempts = 0
+        
         while (totalBytesRead < count) {
-            if (!clientSocket.isOpen) throw IOException("SOCKS5: Connection closed by ${remoteAddress} while reading.")
+            readAttempts++
+            
+            if (!clientSocket.isOpen) {
+                Log.e(TAG, "SOCKS5: Connection closed by ${remoteAddress} while reading (attempt $readAttempts, got $totalBytesRead/$count bytes)")
+                throw IOException("SOCKS5: Connection closed by ${remoteAddress} while reading.")
+            }
+            
             val bytesRead = clientSocket.read(buffer)
+            Log.v(TAG, "SOCKS5: Read attempt $readAttempts for ${remoteAddress}: got $bytesRead bytes (total: $totalBytesRead/$count)")
+            
             if (bytesRead == -1) {
+                Log.e(TAG, "SOCKS5: EOF received from ${remoteAddress} after $totalBytesRead/$count bytes (attempt $readAttempts)")
                 throw IOException("SOCKS5: Connection closed by ${remoteAddress} (EOF) while expecting $count bytes.")
             }
+            
             if (bytesRead == 0) {
                 // Avoid busy loop if read returns 0 immediately (e.g. non-blocking socket with no data)
+                if (readAttempts > 100) { // Prevent infinite loop
+                    Log.e(TAG, "SOCKS5: Too many zero-byte reads from ${remoteAddress} (attempt $readAttempts), connection may be stalled")
+                    throw IOException("SOCKS5: Too many failed read attempts from ${remoteAddress}")
+                }
                 kotlinx.coroutines.delay(10)
                 continue
             }
             totalBytesRead += bytesRead
         }
         buffer.flip()
+        Log.v(TAG, "SOCKS5: Successfully read $totalBytesRead bytes from ${remoteAddress} in $readAttempts attempts")
         return buffer.array().copyOf(buffer.limit()) // Ensure only read bytes are returned
     }
 
@@ -288,7 +327,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
     }
 
     override fun close() {
-        logger.debug { "Closing Socks5ProxySocket for ${remoteAddress}." }
+        Log.d(TAG, "Closing Socks5ProxySocket for ${remoteAddress}.")
          if (!connectSessionChannel.isClosedForSend) {
             connectSessionChannel.close(IOException("Socks5ProxySocket closed before session could be established."))
         }

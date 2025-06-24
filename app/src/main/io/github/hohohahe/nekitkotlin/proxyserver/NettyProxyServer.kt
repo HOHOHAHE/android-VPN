@@ -1,5 +1,6 @@
 package io.github.hohohahe.nekitkotlin.proxyserver
 
+import android.util.Log
 import io.github.hohohahe.nekitkotlin.core.Port
 import io.github.hohohahe.nekitkotlin.core.IpAddress
 import io.github.hohohahe.nekitkotlin.rule.RuleManager
@@ -14,10 +15,9 @@ import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import kotlinx.coroutines.*
-import mu.KotlinLogging
 import java.util.concurrent.ConcurrentHashMap
 
-private val logger = KotlinLogging.logger {}
+private const val TAG = "NettyProxyServer"
 
 enum class ProxyType {
     HTTP,
@@ -41,7 +41,7 @@ class NettyProxyServer(
 
     override suspend fun start() {
         if (isRunning()) {
-            logger.warn { "NettyProxyServer on port ${port.value} is already running." }
+            Log.w(TAG, "NettyProxyServer on port ${port.value} is already running.")
             return
         }
 
@@ -50,7 +50,7 @@ class NettyProxyServer(
             .channel(NioServerSocketChannel::class.java)
             .childHandler(object : ChannelInitializer<SocketChannel>() {
                 override fun initChannel(ch: SocketChannel) {
-                    logger.info { "Accepted new connection from ${ch.remoteAddress()} on port ${port.value}" }
+                    Log.i(TAG, "Accepted new connection from ${ch.remoteAddress()} on port ${port.value}")
 
                     // Create a RawTcpSocket wrapper around the Netty SocketChannel
                     // This NettyRawTcpSocket needs to be initialized with an existing Channel
@@ -72,26 +72,53 @@ class NettyProxyServer(
                         val tunnel = Tunnel(this, clientProxySocket, ruleManager)
                         activeTunnels[ch.id()] = tunnel
                         try {
+                            // Wait a bit to ensure connection is stable before processing
+                            // This helps handle clients that connect and immediately disconnect
+                            Log.d(TAG, "Waiting for connection to stabilize for ${ch.remoteAddress()}")
+                            kotlinx.coroutines.delay(100) // Give client time to send data or stabilize
+                            
+                            // Check if connection is still active after stabilization period
+                            if (!ch.isActive || !ch.isOpen || !rawTcpSocketForClient.isOpen) {
+                                Log.w(TAG, "Client connection ${ch.remoteAddress()} closed during stabilization period")
+                                Log.d(TAG, "Connection state: channel.isActive=${ch.isActive}, channel.isOpen=${ch.isOpen}, socket.isOpen=${rawTcpSocketForClient.isOpen}")
+                                return@launch // Exit early, resources will be cleaned up in finally block
+                            }
+                            
+                            Log.d(TAG, "Starting proxy handshake for ${ch.remoteAddress()}")
                             // HttpProxySocket and Socks5ProxySocket need to be triggered to parse
                             when (clientProxySocket) {
-                                is HttpProxySocket -> clientProxySocket.handleIncomingConnection()
-                                is Socks5ProxySocket -> clientProxySocket.handleIncomingConnection()
+                                is HttpProxySocket -> {
+                                    Log.d(TAG, "Processing HTTP proxy handshake for ${ch.remoteAddress()}")
+                                    clientProxySocket.handleIncomingConnection()
+                                }
+                                is Socks5ProxySocket -> {
+                                    Log.d(TAG, "Processing SOCKS5 proxy handshake for ${ch.remoteAddress()}")
+                                    clientProxySocket.handleIncomingConnection()
+                                }
                             }
+                            Log.d(TAG, "Proxy handshake completed for ${ch.remoteAddress()}, starting tunnel relay")
                             // If parsing was successful and connectSession is available, openAndRelay
                             // The current getConnectSession() returns a Flow, which Tunnel collects.
                             // The handleIncomingConnection should populate that flow.
                             tunnel.openAndRelay()
                         } catch (e: Exception) {
                             if (e is CancellationException) {
-                                 logger.info {"Tunnel for ${ch.remoteAddress()} cancelled during setup."}
+                                 Log.i(TAG, "Tunnel for ${ch.remoteAddress()} cancelled during setup.")
                             } else {
-                                logger.error(e) { "Error setting up tunnel for ${ch.remoteAddress()}: ${e.message}" }
+                                Log.e(TAG, "Error setting up tunnel for ${ch.remoteAddress()}: ${e.javaClass.simpleName} - ${e.message}", e)
+                                // Add specific error details based on exception type
+                                when (e) {
+                                    is java.io.IOException -> Log.e(TAG, "IO Error details for ${ch.remoteAddress()}: Connection may have been closed by client")
+                                    is kotlinx.coroutines.TimeoutCancellationException -> Log.e(TAG, "Timeout error for ${ch.remoteAddress()}: Operation took too long")
+                                    is IllegalStateException -> Log.e(TAG, "State error for ${ch.remoteAddress()}: ${e.message}")
+                                    else -> Log.e(TAG, "Unexpected error type for ${ch.remoteAddress()}: ${e.javaClass.name}")
+                                }
                             }
                             // Ensure resources are cleaned up if setup fails
                             clientProxySocket.close() // This should close rawTcpSocketForClient too
                         } finally {
                              activeTunnels.remove(ch.id())
-                             logger.debug("Tunnel for ${ch.remoteAddress()} removed. Active tunnels: ${activeTunnels.size}")
+                             Log.d(TAG, "Tunnel for ${ch.remoteAddress()} removed. Active tunnels: ${activeTunnels.size}")
                         }
                     }
                 }
@@ -107,7 +134,7 @@ class NettyProxyServer(
             }
             serverChannel = channelFuture.channel()
             val bindInfo = if (host != null) "${host.value}:${port.value}" else "0.0.0.0:${port.value}"
-            logger.info { "$proxyType Proxy Server started on $bindInfo" }
+            Log.i(TAG, "$proxyType Proxy Server started on $bindInfo")
 
             // To keep start() suspending until server is stopped, uncomment:
             // serverChannel?.closeFuture()?.sync()
@@ -115,7 +142,7 @@ class NettyProxyServer(
 
         } catch (e: Exception) {
             val errorBindInfo = if (host != null) "${host.value}:${port.value}" else "0.0.0.0:${port.value}"
-            logger.error(e) { "Failed to start $proxyType Proxy Server on $errorBindInfo" }
+            Log.e(TAG, "Failed to start $proxyType Proxy Server on $errorBindInfo", e)
             // Ensure groups are shut down if bind fails and they are not shared
             // stop() // Call stop to clean up resources
             throw e // Re-throw to signal failure to start
@@ -124,14 +151,14 @@ class NettyProxyServer(
 
     override fun stop() {
         val stopBindInfo = if (host != null) "${host.value}:${port.value}" else "0.0.0.0:${port.value}"
-        logger.info { "Stopping $proxyType Proxy Server on $stopBindInfo..." }
+        Log.i(TAG, "Stopping $proxyType Proxy Server on $stopBindInfo...")
 
         // Close all active tunnels
         activeTunnels.values.forEach { tunnel ->
             try {
                 tunnel.close()
             } catch (e: Exception) {
-                logger.warn(e) { "Exception while closing an active tunnel." }
+                Log.w(TAG, "Exception while closing an active tunnel.", e)
             }
         }
         activeTunnels.clear()
@@ -148,8 +175,7 @@ class NettyProxyServer(
         // If bossGroup and workerGroup are passed in, the caller should manage their lifecycle.
         // bossGroup.shutdownGracefully().awaitUninterruptibly()
         // workerGroup.shutdownGracefully().awaitUninterruptibly()
-        val stoppedBindInfo = if (host != null) "${host.value}:${port.value}" else "0.0.0.0:${port.value}"
-        logger.info { "$proxyType Proxy Server on $stoppedBindInfo stopped." }
+        Log.i(TAG, "$proxyType Proxy Server on $stopBindInfo stopped.")
     }
 
     override fun isRunning(): Boolean {
