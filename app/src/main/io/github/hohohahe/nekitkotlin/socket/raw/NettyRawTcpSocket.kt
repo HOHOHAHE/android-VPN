@@ -187,13 +187,8 @@ class NettyRawTcpSocket : RawTcpSocket {
             val length = receivedData.remaining()
 
             if (length > buffer.remaining()) {
-                Log.w(TAG, "Read buffer (${buffer.remaining()}) too small for received data (${length}). Putting back remaining data.")
-                
-                // Read only what fits in the buffer
+                // Only read what fits and leave the rest for future reads
                 val bytesToRead = buffer.remaining()
-                val remainingBytes = length - bytesToRead
-                
-                // Create a slice for the data that fits
                 val originalPosition = receivedData.position()
                 val originalLimit = receivedData.limit()
                 receivedData.limit(originalPosition + bytesToRead)
@@ -207,9 +202,7 @@ class NettyRawTcpSocket : RawTcpSocket {
                     remainingData.put(receivedData)
                     remainingData.flip()
                     if (!readChannelInternal.trySend(remainingData).isSuccess) {
-                        Log.e(TAG, "Failed to put back remaining ${remainingData.remaining()} bytes to channel")
-                    } else {
-                        Log.d(TAG, "Put back ${remainingData.remaining()} bytes to channel for next read")
+                        Log.e(TAG, "Failed to put back remaining data to channel")
                     }
                 }
                 

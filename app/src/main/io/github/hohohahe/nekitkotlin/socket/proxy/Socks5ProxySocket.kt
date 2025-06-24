@@ -281,7 +281,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
     private suspend fun readBytes(count: Int): ByteArray {
         Log.v(TAG, "SOCKS5: readBytes requesting $count bytes from ${remoteAddress}")
         
-        val buffer = ByteBuffer.allocate(count)
+        val result = ByteArray(count)
         var totalBytesRead = 0
         var readAttempts = 0
         
@@ -293,6 +293,10 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
                 throw IOException("SOCKS5: Connection closed by ${remoteAddress} while reading.")
             }
             
+            // Create a buffer slice for remaining bytes
+            val remainingCount = count - totalBytesRead
+            val buffer = ByteBuffer.wrap(result, totalBytesRead, remainingCount)
+            
             val bytesRead = clientSocket.read(buffer)
             Log.v(TAG, "SOCKS5: Read attempt $readAttempts for ${remoteAddress}: got $bytesRead bytes (total: $totalBytesRead/$count)")
             
@@ -302,7 +306,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
             }
             
             if (bytesRead == 0) {
-                // Avoid busy loop if read returns 0 immediately (e.g. non-blocking socket with no data)
+                // Avoid busy loop if read returns 0 immediately
                 if (readAttempts > 100) { // Prevent infinite loop
                     Log.e(TAG, "SOCKS5: Too many zero-byte reads from ${remoteAddress} (attempt $readAttempts), connection may be stalled")
                     throw IOException("SOCKS5: Too many failed read attempts from ${remoteAddress}")
@@ -312,9 +316,9 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
             }
             totalBytesRead += bytesRead
         }
-        buffer.flip()
+        
         Log.v(TAG, "SOCKS5: Successfully read $totalBytesRead bytes from ${remoteAddress} in $readAttempts attempts")
-        return buffer.array().copyOf(buffer.limit()) // Ensure only read bytes are returned
+        return result
     }
 
 
