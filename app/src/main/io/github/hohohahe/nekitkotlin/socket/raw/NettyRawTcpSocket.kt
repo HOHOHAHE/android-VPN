@@ -10,11 +10,7 @@ import io.netty.channel.*
 import io.netty.channel.nio.NioEventLoopGroup
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioSocketChannel
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.*
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import kotlin.coroutines.resume
@@ -28,6 +24,9 @@ class NettyRawTcpSocket : RawTcpSocket {
     private val readChannelInternal = kotlinx.coroutines.channels.Channel<ByteBuffer>(kotlinx.coroutines.channels.Channel.UNLIMITED)
     private val eventLoopGroupToShutDown: EventLoopGroup? // Store if we created it
     private val isServerAcceptedSocket: Boolean
+    
+    // CompletableDeferred to signal when first data arrives
+    private val firstDataReceived = CompletableDeferred<Boolean>()
 
 
     // Constructor for client-side initiated connections
@@ -79,8 +78,16 @@ class NettyRawTcpSocket : RawTcpSocket {
                         val bufferCopy = ByteBuffer.allocate(nioBuffer.remaining())
                         bufferCopy.put(nioBuffer)
                         bufferCopy.flip()
+                        
+                        // Send data to internal channel first
                         if (!readChannelInternal.trySend(bufferCopy).isSuccess) {
                              Log.w(TAG, "Failed to send data to readChannel for ${ctx.channel().remoteAddress()}, channel may be closed or full.")
+                        }
+                        
+                        // Signal that first data has been received AFTER storing the data
+                        if (!firstDataReceived.isCompleted) {
+                            Log.d(TAG, "First data packet received from ${ctx.channel().remoteAddress()}")
+                            firstDataReceived.complete(true)
                         }
                     }
                     msg.release()
@@ -91,6 +98,12 @@ class NettyRawTcpSocket : RawTcpSocket {
 
             override fun channelInactive(ctx: ChannelHandlerContext) {
                 Log.d(TAG, "NettyRawTcpSocket: Channel inactive: ${ctx.channel().remoteAddress()}")
+                
+                // Signal that connection closed before first data if not already completed
+                if (!firstDataReceived.isCompleted) {
+                    firstDataReceived.complete(false)
+                }
+                
                 readChannelInternal.close()
                 super.channelInactive(ctx)
             }
@@ -174,17 +187,33 @@ class NettyRawTcpSocket : RawTcpSocket {
             val length = receivedData.remaining()
 
             if (length > buffer.remaining()) {
-                Log.w(TAG, "Read buffer (${buffer.remaining()}) too small for received data (${length}). Truncating.")
+                Log.w(TAG, "Read buffer (${buffer.remaining()}) too small for received data (${length}). Putting back remaining data.")
+                
+                // Read only what fits in the buffer
+                val bytesToRead = buffer.remaining()
+                val remainingBytes = length - bytesToRead
+                
+                // Create a slice for the data that fits
+                val originalPosition = receivedData.position()
                 val originalLimit = receivedData.limit()
-                receivedData.limit(receivedData.position() + buffer.remaining())
+                receivedData.limit(originalPosition + bytesToRead)
                 buffer.put(receivedData)
-                receivedData.limit(originalLimit) // Restore limit for potential later use if data was re-queued
-                // This part needs careful handling if data is to be preserved.
-                // For now, it copies what fits.
-                return@withContext buffer.position() // Actually means bytes put into buffer (from its perspective)
-                                                    // which is buffer.remaining() before put.
-                                                    // A clearer return would be the number of bytes *read from source*
-                                                    // and put into buffer.
+                
+                // Put the remaining data back to the channel for next read
+                receivedData.position(originalPosition + bytesToRead)
+                receivedData.limit(originalLimit)
+                if (receivedData.hasRemaining()) {
+                    val remainingData = ByteBuffer.allocate(receivedData.remaining())
+                    remainingData.put(receivedData)
+                    remainingData.flip()
+                    if (!readChannelInternal.trySend(remainingData).isSuccess) {
+                        Log.e(TAG, "Failed to put back remaining ${remainingData.remaining()} bytes to channel")
+                    } else {
+                        Log.d(TAG, "Put back ${remainingData.remaining()} bytes to channel for next read")
+                    }
+                }
+                
+                return@withContext bytesToRead
             }
             buffer.put(receivedData)
             length
@@ -219,8 +248,30 @@ class NettyRawTcpSocket : RawTcpSocket {
         }
     }
 
+    /**
+     * Suspends until the first data packet is received or the connection is closed.
+     * @param timeoutMs Maximum time to wait for first data in milliseconds
+     * @return true if data was received, false if connection closed or timeout
+     */
+    suspend fun awaitFirstData(timeoutMs: Long = 5000): Boolean {
+        return try {
+            withTimeout(timeoutMs) {
+                firstDataReceived.await()
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.w(TAG, "Timeout waiting for first data from ${channel?.remoteAddress()}")
+            false
+        }
+    }
+
     override fun close() {
         Log.d(TAG, "Closing NettyRawTcpSocket for ${channel?.remoteAddress()}.")
+        
+        // Complete the first data deferred if not already completed
+        if (!firstDataReceived.isCompleted) {
+            firstDataReceived.complete(false)
+        }
+        
         readChannelInternal.close()
         channel?.close()?.awaitUninterruptibly()
         channel = null // Mark as closed

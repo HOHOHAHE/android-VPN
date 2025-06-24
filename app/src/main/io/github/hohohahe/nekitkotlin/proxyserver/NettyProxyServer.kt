@@ -72,19 +72,19 @@ class NettyProxyServer(
                         val tunnel = Tunnel(this, clientProxySocket, ruleManager)
                         activeTunnels[ch.id()] = tunnel
                         try {
-                            // Wait a bit to ensure connection is stable before processing
-                            // This helps handle clients that connect and immediately disconnect
-                            Log.d(TAG, "Waiting for connection to stabilize for ${ch.remoteAddress()}")
-                            kotlinx.coroutines.delay(100) // Give client time to send data or stabilize
+                            // Wait for first data packet to arrive or connection to close
+                            // This is more efficient than fixed delay and ensures we only process
+                            // connections that actually send data
+                            Log.d(TAG, "Waiting for first data from ${ch.remoteAddress()}")
+                            val dataReceived = rawTcpSocketForClient.awaitFirstData(timeoutMs = 5000)
                             
-                            // Check if connection is still active after stabilization period
-                            if (!ch.isActive || !ch.isOpen || !rawTcpSocketForClient.isOpen) {
-                                Log.w(TAG, "Client connection ${ch.remoteAddress()} closed during stabilization period")
+                            if (!dataReceived) {
+                                Log.w(TAG, "Client connection ${ch.remoteAddress()} closed before sending data or timed out")
                                 Log.d(TAG, "Connection state: channel.isActive=${ch.isActive}, channel.isOpen=${ch.isOpen}, socket.isOpen=${rawTcpSocketForClient.isOpen}")
                                 return@launch // Exit early, resources will be cleaned up in finally block
                             }
                             
-                            Log.d(TAG, "Starting proxy handshake for ${ch.remoteAddress()}")
+                            Log.d(TAG, "First data received from ${ch.remoteAddress()}, starting proxy handshake")
                             // HttpProxySocket and Socks5ProxySocket need to be triggered to parse
                             when (clientProxySocket) {
                                 is HttpProxySocket -> {
