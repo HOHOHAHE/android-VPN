@@ -345,7 +345,7 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
                     Log.e(TAG, "SOCKS5: Too many zero-byte reads from ${remoteAddress} (attempt $readAttempts), connection may be stalled")
                     throw IOException("SOCKS5: Too many failed read attempts from ${remoteAddress}")
                 }
-                kotlinx.coroutines.delay(10)
+                // Removed kotlinx.coroutines.delay(10)
                 continue
             }
             totalBytesRead += bytesRead

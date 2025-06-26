@@ -97,19 +97,20 @@ class NettyRawTcpSocket : RawTcpSocket {
             }
 
             override fun channelInactive(ctx: ChannelHandlerContext) {
-                Log.d(TAG, "NettyRawTcpSocket: Channel inactive: ${ctx.channel().remoteAddress()}")
-                
+                Log.d(TAG, "NettyRawTcpSocket: Channel inactive: ${ctx.channel().remoteAddress()} | isOpen=${ctx.channel().isOpen} isActive=${ctx.channel().isActive} isWritable=${ctx.channel().isWritable}")
+                // Dump stacktrace for debug
+                Log.d(TAG, "NettyRawTcpSocket: ChannelInactive stacktrace", Throwable())
                 // Signal that connection closed before first data if not already completed
                 if (!firstDataReceived.isCompleted) {
                     firstDataReceived.complete(false)
                 }
-                
                 readChannelInternal.close()
                 super.channelInactive(ctx)
             }
 
             override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
-                Log.e(TAG, "NettyRawTcpSocket: Exception in pipeline for ${ctx.channel().remoteAddress()}", cause)
+                Log.e(TAG, "NettyRawTcpSocket: Exception in pipeline for ${ctx.channel().remoteAddress()} | isOpen=${ctx.channel().isOpen} isActive=${ctx.channel().isActive} isWritable=${ctx.channel().isWritable}", cause)
+                Log.e(TAG, "NettyRawTcpSocket: ExceptionCaught stacktrace", Throwable())
                 readChannelInternal.close(cause)
                 ctx.close() // Close Netty channel on exception
             }
@@ -232,14 +233,14 @@ class NettyRawTcpSocket : RawTcpSocket {
          if (!ch.isWritable) {
              Log.w(TAG, "Channel ${ch.remoteAddress()} is not writable, may be congested")
          }
-
+    
         val nettyBuffer = Unpooled.wrappedBuffer(buffer)
         val bytesToWrite = nettyBuffer.readableBytes()
         if (bytesToWrite == 0) return 0
-
+    
         // Add detailed write logging for SSL handshake debugging
         val remoteAddr = ch.remoteAddress()
-        Log.v(TAG, "Writing $bytesToWrite bytes to $remoteAddr")
+        Log.v(TAG, "Writing $bytesToWrite bytes to $remoteAddr | isOpen=${ch.isOpen} isActive=${ch.isActive} isWritable=${ch.isWritable}")
         if (bytesToWrite <= 1024) { // Log small packets (likely handshake data)
             val bufferCopy = buffer.duplicate()
             val bytes = ByteArray(bytesToWrite)
@@ -247,11 +248,12 @@ class NettyRawTcpSocket : RawTcpSocket {
             val dataHex = bytes.joinToString(" ") { "%02x".format(it) }
             Log.v(TAG, "Data to $remoteAddr: $dataHex")
         }
-
+    
         return suspendCancellableCoroutine<Int> { continuation ->
             // Double-check channel state just before write
             if (!ch.isOpen || !ch.isActive) {
-                Log.e(TAG, "Channel to $remoteAddr became inactive just before write")
+                Log.e(TAG, "Channel to $remoteAddr became inactive just before write | isOpen=${ch.isOpen} isActive=${ch.isActive} isWritable=${ch.isWritable}")
+                Log.e(TAG, "NettyRawTcpSocket: Write-before-inactive stacktrace", Throwable())
                 if (continuation.isActive) {
                     continuation.resumeWithException(IllegalStateException("Channel became inactive before write"))
                 }
@@ -260,12 +262,14 @@ class NettyRawTcpSocket : RawTcpSocket {
             
             ch.writeAndFlush(nettyBuffer).addListener { future ->
                 if (future.isSuccess) {
-                    Log.v(TAG, "Successfully wrote $bytesToWrite bytes to $remoteAddr")
+                    Log.v(TAG, "Successfully wrote $bytesToWrite bytes to $remoteAddr | isOpen=${ch.isOpen} isActive=${ch.isActive} isWritable=${ch.isWritable}")
+                    // Manually advance the position of the original ByteBuffer
+                    buffer.position(buffer.position() + bytesToWrite)
                     if (continuation.isActive) continuation.resume(bytesToWrite)
                 } else {
                     val cause = future.cause()
-                    Log.e(TAG, "Failed to write $bytesToWrite bytes to $remoteAddr: ${cause?.javaClass?.simpleName} - ${cause?.message}", cause)
-                    
+                    Log.e(TAG, "Failed to write $bytesToWrite bytes to $remoteAddr: ${cause?.javaClass?.simpleName} - ${cause?.message} | isOpen=${ch.isOpen} isActive=${ch.isActive} isWritable=${ch.isWritable}", cause)
+                    Log.e(TAG, "NettyRawTcpSocket: Write-failure stacktrace", Throwable())
                     // Add specific error analysis
                     when (cause) {
                         is java.io.IOException -> {
@@ -281,7 +285,8 @@ class NettyRawTcpSocket : RawTcpSocket {
                 }
             }
              continuation.invokeOnCancellation {
-                Log.w(TAG, "Write operation to $remoteAddr was cancelled.")
+                Log.w(TAG, "Write operation to $remoteAddr was cancelled. | isOpen=${ch.isOpen} isActive=${ch.isActive} isWritable=${ch.isWritable}")
+                Log.w(TAG, "NettyRawTcpSocket: Write-cancel stacktrace", Throwable())
             }
         }
     }
