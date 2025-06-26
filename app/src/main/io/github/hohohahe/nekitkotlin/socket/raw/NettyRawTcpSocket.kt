@@ -219,24 +219,69 @@ class NettyRawTcpSocket : RawTcpSocket {
 
     override suspend fun write(buffer: ByteBuffer): Int {
          val ch = channel ?: throw IllegalStateException("Socket not connected or already closed")
-         if (!ch.isActive) throw IllegalStateException("Socket is not active for writing.")
+         
+         // Enhanced connection state checking before write
+         if (!ch.isOpen) {
+             Log.w(TAG, "Attempted to write to closed channel ${ch.remoteAddress()}")
+             throw IllegalStateException("Socket channel is closed")
+         }
+         if (!ch.isActive) {
+             Log.w(TAG, "Attempted to write to inactive channel ${ch.remoteAddress()}")
+             throw IllegalStateException("Socket is not active for writing.")
+         }
+         if (!ch.isWritable) {
+             Log.w(TAG, "Channel ${ch.remoteAddress()} is not writable, may be congested")
+         }
 
         val nettyBuffer = Unpooled.wrappedBuffer(buffer)
         val bytesToWrite = nettyBuffer.readableBytes()
         if (bytesToWrite == 0) return 0
 
+        // Add detailed write logging for SSL handshake debugging
+        val remoteAddr = ch.remoteAddress()
+        Log.v(TAG, "Writing $bytesToWrite bytes to $remoteAddr")
+        if (bytesToWrite <= 1024) { // Log small packets (likely handshake data)
+            val bufferCopy = buffer.duplicate()
+            val bytes = ByteArray(bytesToWrite)
+            bufferCopy.get(bytes)
+            val dataHex = bytes.joinToString(" ") { "%02x".format(it) }
+            Log.v(TAG, "Data to $remoteAddr: $dataHex")
+        }
 
         return suspendCancellableCoroutine<Int> { continuation ->
+            // Double-check channel state just before write
+            if (!ch.isOpen || !ch.isActive) {
+                Log.e(TAG, "Channel to $remoteAddr became inactive just before write")
+                if (continuation.isActive) {
+                    continuation.resumeWithException(IllegalStateException("Channel became inactive before write"))
+                }
+                return@suspendCancellableCoroutine
+            }
+            
             ch.writeAndFlush(nettyBuffer).addListener { future ->
                 if (future.isSuccess) {
+                    Log.v(TAG, "Successfully wrote $bytesToWrite bytes to $remoteAddr")
                     if (continuation.isActive) continuation.resume(bytesToWrite)
                 } else {
-                    Log.e(TAG, "Failed to write ${bytesToWrite} bytes to ${ch.remoteAddress()}", future.cause())
-                    if (continuation.isActive) continuation.resumeWithException(future.cause() ?: RuntimeException("Unknown write error"))
+                    val cause = future.cause()
+                    Log.e(TAG, "Failed to write $bytesToWrite bytes to $remoteAddr: ${cause?.javaClass?.simpleName} - ${cause?.message}", cause)
+                    
+                    // Add specific error analysis
+                    when (cause) {
+                        is java.io.IOException -> {
+                            if (cause.message?.contains("Broken pipe") == true) {
+                                Log.e(TAG, "BROKEN PIPE: Remote side $remoteAddr closed connection during write")
+                            } else if (cause.message?.contains("Connection reset") == true) {
+                                Log.e(TAG, "CONNECTION RESET: Remote side $remoteAddr reset connection")
+                            }
+                        }
+                    }
+                    
+                    if (continuation.isActive) continuation.resumeWithException(cause ?: RuntimeException("Unknown write error"))
                 }
             }
              continuation.invokeOnCancellation {
-                Log.w(TAG, "Write operation to ${ch.remoteAddress()} was cancelled.")
+                Log.w(TAG, "Write operation to $remoteAddr was cancelled.")
             }
         }
     }

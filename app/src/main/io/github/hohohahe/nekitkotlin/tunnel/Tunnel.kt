@@ -103,31 +103,77 @@ class Tunnel(
     }
 
 
-    // Relay methods remain the same
+    // Enhanced relay methods with SSL handshake debugging
     private fun CoroutineScope.launchRelay(
         name: String,
         source: ProxySocket,
         destination: AdapterSocket
     ): Job = launch(CoroutineName("relay-$name-ProxyToAdapter")) {
         val buffer = ByteBuffer.allocate(4096)
+        var totalBytesRelayed = 0
+        var packetCount = 0
         try {
+            Log.d(TAG, "Relay $name: Starting relay from ${source.remoteAddress} to ${destination.remoteAddress}")
             while (isActive) {
                 buffer.clear()
                 val bytesRead = source.read(buffer)
-                if (bytesRead == -1) { Log.d(TAG, "Relay $name: source EOF."); break }
+                if (bytesRead == -1) {
+                    Log.d(TAG, "Relay $name: source EOF after $totalBytesRelayed bytes, $packetCount packets.")
+                    break
+                }
                 if (bytesRead == 0) { delay(10); continue }
-                Log.v(TAG, "Relay $name: read $bytesRead bytes.")
+                
+                packetCount++
+                totalBytesRelayed += bytesRead
+                Log.v(TAG, "Relay $name: read $bytesRead bytes (packet #$packetCount, total: $totalBytesRelayed).")
+                
+                // Log first few packets in detail for SSL handshake analysis
+                if (packetCount <= 5 && bytesRead <= 512) {
+                    buffer.flip()
+                    val dataBytes = ByteArray(bytesRead)
+                    buffer.duplicate().get(dataBytes)
+                    val dataHex = dataBytes.joinToString(" ") { "%02x".format(it) }
+                    Log.d(TAG, "Relay $name packet #$packetCount data: $dataHex")
+                    buffer.rewind()
+                }
+                
                 buffer.flip()
-                while (buffer.hasRemaining() && isActive) {
-                    val bytesWritten = destination.write(buffer)
-                    Log.v(TAG, "Relay $name: wrote $bytesWritten bytes.")
-                     if (bytesWritten == 0 && buffer.hasRemaining()) { delay(50); } // Small delay if write didn't consume all
+                var remainingToWrite = bytesRead
+                var writeAttempts = 0
+                while (buffer.hasRemaining() && isActive && remainingToWrite > 0) {
+                    writeAttempts++
+                    val bytesWritten = try {
+                        destination.write(buffer)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Relay $name: Write failed on attempt $writeAttempts for packet #$packetCount: ${e.message}", e)
+                        throw e
+                    }
+                    
+                    remainingToWrite -= bytesWritten
+                    Log.v(TAG, "Relay $name: wrote $bytesWritten bytes (attempt $writeAttempts, remaining: $remainingToWrite).")
+                    
+                    if (bytesWritten == 0 && buffer.hasRemaining()) {
+                        Log.w(TAG, "Relay $name: Zero bytes written on attempt $writeAttempts, delaying...")
+                        delay(50) // Small delay if write didn't consume all
+                    }
+                }
+                
+                if (remainingToWrite > 0) {
+                    Log.e(TAG, "Relay $name: Failed to write all data for packet #$packetCount, $remainingToWrite bytes remaining")
                 }
             }
-        } catch (e: IOException) { Log.w(TAG, "Relay $name: IO error: ${e.message}", e) }
-        catch (e: CancellationException) { Log.d(TAG, "Relay $name: Cancelled.") }
-        catch (e: Exception) { Log.e(TAG, "Relay $name: Unexpected error: ${e.message}", e) }
-        finally { Log.d(TAG, "Relay $name: finished.") }
+        } catch (e: IOException) {
+            Log.w(TAG, "Relay $name: IO error after $totalBytesRelayed bytes, $packetCount packets: ${e.message}", e)
+        }
+        catch (e: CancellationException) {
+            Log.d(TAG, "Relay $name: Cancelled after $totalBytesRelayed bytes, $packetCount packets.")
+        }
+        catch (e: Exception) {
+            Log.e(TAG, "Relay $name: Unexpected error after $totalBytesRelayed bytes, $packetCount packets: ${e.message}", e)
+        }
+        finally {
+            Log.d(TAG, "Relay $name: finished. Total: $totalBytesRelayed bytes, $packetCount packets.")
+        }
     }
 
     private fun CoroutineScope.launchRelay(
@@ -136,24 +182,70 @@ class Tunnel(
         destination: ProxySocket
     ): Job = launch(CoroutineName("relay-$name-AdapterToProxy")) {
          val buffer = ByteBuffer.allocate(4096)
+         var totalBytesRelayed = 0
+         var packetCount = 0
         try {
+            Log.d(TAG, "Relay $name: Starting relay from ${source.remoteAddress} to ${destination.remoteAddress}")
             while (isActive) {
                 buffer.clear()
                 val bytesRead = source.read(buffer)
-                if (bytesRead == -1) { Log.d(TAG, "Relay $name: source EOF."); break }
+                if (bytesRead == -1) {
+                    Log.d(TAG, "Relay $name: source EOF after $totalBytesRelayed bytes, $packetCount packets.")
+                    break
+                }
                 if (bytesRead == 0) { delay(10); continue }
-                Log.v(TAG, "Relay $name: read $bytesRead bytes.")
+                
+                packetCount++
+                totalBytesRelayed += bytesRead
+                Log.v(TAG, "Relay $name: read $bytesRead bytes (packet #$packetCount, total: $totalBytesRelayed).")
+                
+                // Log first few packets in detail for SSL handshake analysis
+                if (packetCount <= 5 && bytesRead <= 512) {
+                    buffer.flip()
+                    val dataBytes = ByteArray(bytesRead)
+                    buffer.duplicate().get(dataBytes)
+                    val dataHex = dataBytes.joinToString(" ") { "%02x".format(it) }
+                    Log.d(TAG, "Relay $name packet #$packetCount data: $dataHex")
+                    buffer.rewind()
+                }
+                
                 buffer.flip()
-                while (buffer.hasRemaining() && isActive) {
-                    val bytesWritten = destination.write(buffer)
-                    Log.v(TAG, "Relay $name: wrote $bytesWritten bytes.")
-                    if (bytesWritten == 0 && buffer.hasRemaining()) { delay(50); } // Small delay
+                var remainingToWrite = bytesRead
+                var writeAttempts = 0
+                while (buffer.hasRemaining() && isActive && remainingToWrite > 0) {
+                    writeAttempts++
+                    val bytesWritten = try {
+                        destination.write(buffer)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Relay $name: Write failed on attempt $writeAttempts for packet #$packetCount: ${e.message}", e)
+                        throw e
+                    }
+                    
+                    remainingToWrite -= bytesWritten
+                    Log.v(TAG, "Relay $name: wrote $bytesWritten bytes (attempt $writeAttempts, remaining: $remainingToWrite).")
+                    
+                    if (bytesWritten == 0 && buffer.hasRemaining()) {
+                        Log.w(TAG, "Relay $name: Zero bytes written on attempt $writeAttempts, delaying...")
+                        delay(50) // Small delay
+                    }
+                }
+                
+                if (remainingToWrite > 0) {
+                    Log.e(TAG, "Relay $name: Failed to write all data for packet #$packetCount, $remainingToWrite bytes remaining")
                 }
             }
-        } catch (e: IOException) { Log.w(TAG, "Relay $name: IO error: ${e.message}", e) }
-        catch (e: CancellationException) { Log.d(TAG, "Relay $name: Cancelled.") }
-        catch (e: Exception) { Log.e(TAG, "Relay $name: Unexpected error: ${e.message}", e) }
-        finally { Log.d(TAG, "Relay $name: finished.") }
+        } catch (e: IOException) {
+            Log.w(TAG, "Relay $name: IO error after $totalBytesRelayed bytes, $packetCount packets: ${e.message}", e)
+        }
+        catch (e: CancellationException) {
+            Log.d(TAG, "Relay $name: Cancelled after $totalBytesRelayed bytes, $packetCount packets.")
+        }
+        catch (e: Exception) {
+            Log.e(TAG, "Relay $name: Unexpected error after $totalBytesRelayed bytes, $packetCount packets: ${e.message}", e)
+        }
+        finally {
+            Log.d(TAG, "Relay $name: finished. Total: $totalBytesRelayed bytes, $packetCount packets.")
+        }
     }
 
     fun close() { // This method is for external calls to initiate closure

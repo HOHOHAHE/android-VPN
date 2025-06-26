@@ -212,6 +212,14 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
         // on the connection to the target, or can be zeroed if not relevant.
         // For this proxy, let's use the local address of the clientSocket if available, else 0.0.0.0.
 
+        Log.d(TAG, "SOCKS5: [TIMING] Building reply for ${remoteAddress}: REP=$rep")
+        
+        // Check socket state before building reply
+        if (!clientSocket.isOpen) {
+            Log.e(TAG, "SOCKS5: [TIMING] Cannot send reply to ${remoteAddress}, client socket is closed")
+            throw IOException("Client socket is closed, cannot send SOCKS5 reply")
+        }
+
         val replyBuffer = ByteBuffer.allocate(32) // Max size for domain name could be larger, but typical replies are small
         replyBuffer.put(SOCKS_VERSION_5)
         replyBuffer.put(rep)
@@ -254,8 +262,24 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
         replyBuffer.putShort(effectiveBoundPortVal.toShort())
 
         replyBuffer.flip()
-        Log.d(TAG, "SOCKS5: Sending reply to ${remoteAddress}: REP=$rep, BND.ADDR=${IpAddress(effectiveBoundAddr)}, BND.PORT=$effectiveBoundPortVal")
-        clientSocket.write(replyBuffer)
+        
+        // Log the reply packet content for debugging
+        val replyBytes = ByteArray(replyBuffer.remaining())
+        replyBuffer.duplicate().get(replyBytes)
+        val replyHex = replyBytes.joinToString(" ") { "%02x".format(it) }
+        Log.d(TAG, "SOCKS5: [TIMING] Sending reply packet to ${remoteAddress}: $replyHex")
+        Log.d(TAG, "SOCKS5: [TIMING] Reply details - REP=$rep, BND.ADDR=${IpAddress(effectiveBoundAddr)}, BND.PORT=$effectiveBoundPortVal")
+        
+        val writeStartTime = System.currentTimeMillis()
+        try {
+            val bytesWritten = clientSocket.write(replyBuffer)
+            val writeEndTime = System.currentTimeMillis()
+            Log.d(TAG, "SOCKS5: [TIMING] Reply write completed to ${remoteAddress}: $bytesWritten bytes in ${writeEndTime - writeStartTime}ms")
+        } catch (e: Exception) {
+            val writeEndTime = System.currentTimeMillis()
+            Log.e(TAG, "SOCKS5: [TIMING] Reply write failed to ${remoteAddress} after ${writeEndTime - writeStartTime}ms: ${e.message}", e)
+            throw e
+        }
     }
 
 
@@ -267,8 +291,18 @@ class Socks5ProxySocket(private val clientSocket: RawTcpSocket) : ProxySocket {
         // We need to retrieve it from the ConnectSession that was processed by the adapter.
         // Let's assume for now that the Tunnel doesn't pass this back, and we use defaults.
         // A better design would be respondToSuccess(finalConnectSession: ConnectSession)
-        Log.d(TAG, "SOCKS5: Responding SUCCEEDED to ${remoteAddress}")
-        sendReply(REP_SUCCEEDED, localAddress, Port( (clientSocket.localAddress as? InetSocketAddress)?.port ?: 0))
+        
+        val currentTime = System.currentTimeMillis()
+        Log.d(TAG, "SOCKS5: [TIMING] Responding SUCCEEDED to ${remoteAddress} at timestamp $currentTime")
+        Log.d(TAG, "SOCKS5: [TIMING] Client socket state - isOpen: ${clientSocket.isOpen}, localAddr: ${clientSocket.localAddress}")
+        
+        try {
+            sendReply(REP_SUCCEEDED, localAddress, Port( (clientSocket.localAddress as? InetSocketAddress)?.port ?: 0))
+            Log.d(TAG, "SOCKS5: [TIMING] SUCCESS reply sent to ${remoteAddress} successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "SOCKS5: [TIMING] Failed to send SUCCESS reply to ${remoteAddress}: ${e.message}", e)
+            throw e
+        }
     }
 
     override suspend fun respondToFailure(reason: String) {
