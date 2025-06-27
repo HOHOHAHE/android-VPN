@@ -150,6 +150,7 @@ class NettyRawTcpSocket : RawTcpSocket {
                     ch.pipeline().addLast("handler", createChannelInboundHandlerAdapter())
                 }
             })
+            .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000) // Set connection timeout
             .option(ChannelOption.TCP_NODELAY, true)
             .option(ChannelOption.SO_KEEPALIVE, true)
         this.bootstrap = b

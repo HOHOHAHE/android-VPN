@@ -71,7 +71,7 @@ class DirectAdapterSocket(
     override suspend fun write(buffer: ByteBuffer): Int {
         if (!_isReady.value || !rawTcpSocket.isOpen) {
             logger.warn { "Attempting to write to a non-ready or closed DirectAdapterSocket." }
-            throw IllegalStateException("Socket is not ready or closed for writing.")
+            return -1
         }
         return rawTcpSocket.write(buffer)
     }

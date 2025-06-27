@@ -218,12 +218,14 @@ class Tunnel(
 
                 // Log first few packets in detail for SSL handshake analysis
                 if (packetCount <= 5 && bytesRead <= 512) {
-                    buffer.flip()
                     val dataBytes = ByteArray(bytesRead)
-                    buffer.duplicate().get(dataBytes)
+                    // Create a duplicate buffer for logging to avoid affecting the original buffer's state
+                    val logBuffer = buffer.duplicate()
+                    logBuffer.flip() // Flip the duplicate for reading
+                    logBuffer.get(dataBytes)
                     val dataHex = dataBytes.joinToString(" ") { "%02x".format(it) }
                     Log.d(TAG, "Relay $name packet #$packetCount data: $dataHex")
-                    buffer.rewind()
+                    // No need to rewind the original buffer here, as we used a duplicate
                 }
 
                 buffer.flip()
